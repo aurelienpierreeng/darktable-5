@@ -62,6 +62,7 @@ endmacro (add_iop)
 # @@_NEW_MODULE: when adding a new module here, please grep @@_NEW_MODULE in the code and adjust accordingly.
 
 # add_iop(useless "useless.c")
+add_iop(colorharmonizer "colorharmonizer.c" DEFAULT_VISIBLE)
 add_iop(rawprepare "rawprepare.c")
 add_iop(soften "soften.c")
 add_iop(bloom "bloom.c")
@@ -152,8 +153,10 @@ add_iop(cacorrectrgb "cacorrectrgb.c")
 add_iop(diffuse "diffuse.c")
 add_iop(blurs "blurs.c")
 add_iop(sigmoid "sigmoid.c")
+add_iop(agx "agx.c")
 add_iop(primaries "primaries.c")
 add_iop(colorequal "colorequal.c")
+add_iop(rasterfile "rasterfile.c")
 
 if(Rsvg2_FOUND)
   add_iop(watermark "watermark.c")

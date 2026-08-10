@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2011-2021 darktable developers.
+    Copyright (C) 2011-2026 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -26,6 +26,7 @@ G_BEGIN_DECLS
 
 // sizes stored in the mipmap cache, set to fixed values in mipmap_cache.c
 typedef enum dt_mipmap_size_t {
+  // 8 bit, downscaled, for lighttable thumbnails
   DT_MIPMAP_0 = 0,
   DT_MIPMAP_1,
   DT_MIPMAP_2,
@@ -35,10 +36,17 @@ typedef enum dt_mipmap_size_t {
   DT_MIPMAP_6,
   DT_MIPMAP_7,
   DT_MIPMAP_8,
+  DT_MIPMAP_9,
+  // 8 bit, full resolution, for zoomed in thumbnail
+  DT_MIPMAP_10,
+  // float, downscaled, for preview pixelpipe
   DT_MIPMAP_F,
+  // float, full resolution, for full/export pixelpipe
   DT_MIPMAP_FULL,
   DT_MIPMAP_NONE
 } dt_mipmap_size_t;
+
+static const dt_mipmap_size_t DT_MIPMAP_LDR_MAX = DT_MIPMAP_10;
 
 // type to be passed to getter functions
 typedef enum dt_mipmap_get_flags_t
@@ -109,16 +117,15 @@ typedef struct dt_mipmap_cache_t
 // function takes care of re-allocating, if necessary.
 void *dt_mipmap_cache_alloc(dt_mipmap_buffer_t *buf, const dt_image_t *img);
 
-void dt_mipmap_cache_init(dt_mipmap_cache_t *cache);
-void dt_mipmap_cache_cleanup(dt_mipmap_cache_t *cache);
-void dt_mipmap_cache_print(dt_mipmap_cache_t *cache);
+void dt_mipmap_cache_init(void);
+void dt_mipmap_cache_cleanup(void);
+void dt_mipmap_cache_print(void);
 
 // get a buffer and lock according to mode ('r' or 'w').
 // see dt_mipmap_get_flags_t for explanation of the exact
 // behaviour. pass 0 as flags for the default (best effort)
-#define dt_mipmap_cache_get(A,B,C,D,E,F) dt_mipmap_cache_get_with_caller(A,B,C,D,E,F,__FILE__,__LINE__)
+#define dt_mipmap_cache_get(B,C,D,E,F) dt_mipmap_cache_get_with_caller(B,C,D,E,F,__FILE__,__LINE__)
 void dt_mipmap_cache_get_with_caller(
-    dt_mipmap_cache_t *cache,
     dt_mipmap_buffer_t *buf,
     const dt_imgid_t imgid,
     const dt_mipmap_size_t mip,
@@ -128,17 +135,16 @@ void dt_mipmap_cache_get_with_caller(
     int line);
 
 // drop a lock
-#define dt_mipmap_cache_release(A, B) dt_mipmap_cache_release_with_caller(A, B, __FILE__, __LINE__)
-void dt_mipmap_cache_release_with_caller(dt_mipmap_cache_t *cache, dt_mipmap_buffer_t *buf, const char *file,
-                                         int line);
+#define dt_mipmap_cache_release(A ) dt_mipmap_cache_release_with_caller(A, __FILE__, __LINE__)
+void dt_mipmap_cache_release_with_caller(dt_mipmap_buffer_t *buf, const char *file, int line);
 
 // remove thumbnails, so they will be regenerated:
-void dt_mipmap_cache_remove(dt_mipmap_cache_t *cache, const dt_imgid_t imgid);
-void dt_mipmap_cache_remove_at_size(dt_mipmap_cache_t *cache, const dt_imgid_t imgid, const dt_mipmap_size_t mip);
+void dt_mipmap_cache_remove(const dt_imgid_t imgid);
+void dt_mipmap_cache_remove_at_size(const dt_imgid_t imgid, const dt_mipmap_size_t mip);
 
 // evict thumbnails from cache. They will be written to disc if not existing
-void dt_mimap_cache_evict(dt_mipmap_cache_t *cache, const dt_imgid_t imgid);
-void dt_mipmap_cache_evict_at_size(dt_mipmap_cache_t *cache, const dt_imgid_t imgid, const dt_mipmap_size_t mip);
+void dt_mipmap_cache_evict(const dt_imgid_t imgid);
+void dt_mipmap_cache_evict_at_size(const dt_imgid_t imgid, const dt_mipmap_size_t mip);
 
 // return the closest mipmap size
 // for the given window you wish to draw.
@@ -146,17 +152,14 @@ void dt_mipmap_cache_evict_at_size(dt_mipmap_cache_t *cache, const dt_imgid_t im
 // depending on the user parameter for the maximum thumbnail dimensions.
 // actual resolution depends on the image and is only known after
 // the thumbnail is loaded.
-dt_mipmap_size_t dt_mipmap_cache_get_matching_size(
-    const dt_mipmap_cache_t *cache,
-    const int32_t width,
-    const int32_t height);
+dt_mipmap_size_t dt_mipmap_cache_get_matching_size(const int32_t width, const int32_t height);
 
 // returns the colorspace to use for created thumbnails, takes config into account
-dt_colorspaces_color_profile_type_t dt_mipmap_cache_get_colorspace();
+dt_colorspaces_color_profile_type_t dt_mipmap_cache_get_colorspace(void);
 
 // copy over thumbnails. used by file operation that copies raw files, to speed up thumbnail generation.
 // only copies over the jpg backend on disk, doesn't directly affect the in-memory cache.
-void dt_mipmap_cache_copy_thumbnails(const dt_mipmap_cache_t *cache, const dt_imgid_t dst_imgid, const dt_imgid_t src_imgid);
+void dt_mipmap_cache_copy_thumbnails(const dt_imgid_t dst_imgid, const dt_imgid_t src_imgid);
 
 // return the mipmap corresponding to text value saved in prefs
 dt_mipmap_size_t dt_mipmap_cache_get_min_mip_from_pref(const char *value);

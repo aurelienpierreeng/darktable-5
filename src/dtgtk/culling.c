@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2020-2023 darktable developers.
+    Copyright (C) 2020-2026 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -50,7 +50,7 @@ static void _list_remove_thumb(gpointer user_data)
 }
 
 // get imgid from rowid
-static dt_imgid_t _thumb_get_imgid(int rowid)
+static dt_imgid_t _thumb_get_imgid(const int rowid)
 {
   dt_imgid_t id = NO_IMGID;
   sqlite3_stmt *stmt;
@@ -68,7 +68,7 @@ static dt_imgid_t _thumb_get_imgid(int rowid)
   return id;
 }
 // get rowid from imgid
-static int _thumb_get_rowid(dt_imgid_t imgid)
+static int _thumb_get_rowid(const dt_imgid_t imgid)
 {
   dt_imgid_t id = NO_IMGID;
   sqlite3_stmt *stmt;
@@ -88,7 +88,8 @@ static int _thumb_get_rowid(dt_imgid_t imgid)
 
 // compute thumb_size, thumbs_per_row and rows for the current widget size
 // return TRUE if something as changed (or forced) FALSE otherwise
-static gboolean _compute_sizes(dt_culling_t *table, const gboolean force)
+static gboolean _compute_sizes(dt_culling_t *table,
+                               const gboolean force)
 {
   gboolean ret = FALSE; // return value to show if something as changed
   GtkAllocation allocation;
@@ -104,7 +105,7 @@ static gboolean _compute_sizes(dt_culling_t *table, const gboolean force)
   // check the offset
   if(table->list)
   {
-    dt_thumbnail_t *th = table->list->data;
+    const dt_thumbnail_t *th = table->list->data;
     if(th->imgid != table->offset_imgid || th->display_focus != table->focus)
       ret = TRUE;
   }
@@ -157,7 +158,7 @@ static void _thumbs_refocus(dt_culling_t *table)
     // which thumb is under the mouse ?
     for(GList *l = table->list; l; l = g_list_next(l))
     {
-      dt_thumbnail_t *th = l->data;
+      const dt_thumbnail_t *th = l->data;
       if(th->x <= x && th->x + th->width > x && th->y <= y && th->y + th->height > y)
       {
         overid = th->imgid;
@@ -176,7 +177,8 @@ static void _thumbs_refocus(dt_culling_t *table)
   dt_control_set_mouse_over_id(overid);
 }
 
-static void _thumbs_move(dt_culling_t *table, const int move)
+static void _thumbs_move(dt_culling_t *table,
+                         const int move)
 {
   if(move == 0) return;
   int new_offset = table->offset;
@@ -322,21 +324,33 @@ static void _set_table_zoom_ratio(dt_culling_t *table, dt_thumbnail_t *th)
   table->zoom_ratio = dt_thumbnail_get_zoom_ratio(th);
 }
 
-static void _get_root_offset(GtkWidget *w_image_box,
-                             const float x_root,
-                             const float y_root,
-                             int *x_offset,
-                             int *y_offset)
+// Safety-net finaliser for deferred zoom gestures: fires once no further zoom
+// event has arrived for a short while. This guarantees the surface is reloaded
+// at the correct resolution even when the input device never emits a smooth
+// scroll "stop" event (or emits it without the ctrl modifier still held).
+static gboolean _zoom_finalize_timeout(gpointer user_data)
 {
-  gdk_window_get_origin(gtk_widget_get_window(w_image_box), x_offset, y_offset);
-  *x_offset = x_root - *x_offset;
-  *y_offset = y_root - *y_offset;
+  dt_culling_t *table = (dt_culling_t *)user_data;
+  table->zoom_finalize_timeout_id = 0;
+  dt_culling_zoom_end(table);
+  return G_SOURCE_REMOVE;
+}
+
+// (Re)arm the deferred-zoom finaliser. Called after each deferred zoom event so
+// the timer keeps sliding forward while the gesture is ongoing and only fires
+// once the user actually stops.
+static void _schedule_zoom_finalize(dt_culling_t *table)
+{
+  if(table->zoom_finalize_timeout_id)
+    g_source_remove(table->zoom_finalize_timeout_id);
+  table->zoom_finalize_timeout_id = g_timeout_add(200, _zoom_finalize_timeout, table);
 }
 
 static gboolean _zoom_and_shift(dt_thumbnail_t *th,
                                 const int x_offset,
                                 const int y_offset,
-                                const float zoom_delta)
+                                const float zoom_delta,
+                                const gboolean deferred)
 {
   const float zd = CLAMP(th->zoom + zoom_delta, 1.0f, th->zoom_100);
   if(zd == th->zoom)
@@ -350,39 +364,62 @@ static gboolean _zoom_and_shift(dt_thumbnail_t *th,
 
   const int iw = gtk_widget_get_allocated_width(th->w_image);
   const int ih = gtk_widget_get_allocated_height(th->w_image);
+  const int box_w = gtk_widget_get_allocated_width(th->w_image_box);
+  const int box_h = gtk_widget_get_allocated_height(th->w_image_box);
+
+  dt_print(DT_DEBUG_INPUT,
+           "[culling _zoom_and_shift] offset=(%d,%d) iw=%d ih=%d box=(%d,%d)"
+           " zoom=%.3f->%.3f z_ratio=%.4f",
+           posx, posy, iw, ih, box_w, box_h, th->zoom / z_ratio, zd, z_ratio);
 
   // we center the zoom around cursor position
   if(posx >= 0 && posy >= 0)
   {
     // we take in account that the image may be smaller that the imagebox
-    posx -= (gtk_widget_get_allocated_width(th->w_image_box) - iw) / 2;
-    posy -= (gtk_widget_get_allocated_height(th->w_image_box) - ih) / 2;
+    posx -= (box_w - iw) / 2;
+    posy -= (box_h - ih) / 2;
   }
+
+  dt_print(DT_DEBUG_INPUT,
+           "[culling _zoom_and_shift] posx_after_center=%d posy_after_center=%d"
+           " old_zoomx=%.1f old_zoomy=%.1f",
+           posx, posy, th->zoomx, th->zoomy);
 
   // we change the value. Values will be sanitized in the drawing event
   th->zoomx = posx - (posx - th->zoomx) * z_ratio;
   th->zoomy = posy - (posy - th->zoomy) * z_ratio;
 
-  dt_thumbnail_image_refresh(th);
+  dt_print(DT_DEBUG_INPUT,
+           "[culling _zoom_and_shift] new_zoomx=%.1f new_zoomy=%.1f",
+           th->zoomx, th->zoomy);
+
+  if(deferred)
+    // Fast path: reuse existing surface via cairo scale transform in _thumb_draw_image.
+    // dt_culling_zoom_end() will trigger the proper reload when the gesture finishes.
+    dt_thumbnail_image_preview_zoom(th);
+  else
+    // Full reload: preserves the native mipmap surface cache so the expensive color
+    // conversion is skipped when zoom stays in the same mipmap bucket.
+    dt_thumbnail_image_refresh_zoom(th);
 
   return TRUE;
 }
 
 static gboolean _zoom_to_x_root(dt_thumbnail_t *th,
-                                const float x_root,
-                                const float y_root,
-                                const float zoom_delta)
+                                const float x_culling,
+                                const float y_culling,
+                                const float zoom_delta,
+                                const gboolean deferred)
 {
-  int x_offset = 0;
-  int y_offset = 0;
+  const int posx = x_culling - th->x;
+  const int posy = y_culling - th->y;
 
-  _get_root_offset(th->w_image_box, x_root, y_root, &x_offset, &y_offset);
-
-  return _zoom_and_shift(th, x_offset, y_offset, zoom_delta);
+  return _zoom_and_shift(th, posx, posy, zoom_delta, deferred);
 }
 
 static gboolean _zoom_to_center(dt_thumbnail_t *th,
-                                const float zoom_delta)
+                                const float zoom_delta,
+                                const gboolean deferred)
 {
   const float zd = CLAMP(th->zoom + zoom_delta, 1.0f, th->zoom_100);
   if(zd == th->zoom)
@@ -394,20 +431,35 @@ static gboolean _zoom_to_center(dt_thumbnail_t *th,
   int iw = 0;
   int ih = 0;
   gtk_widget_get_size_request(th->w_image_box, &iw, &ih);
-  th->zoomx = fmaxf(iw - th->img_width * z_ratio,
+  // Bound to the real rendered image extent rather than box*zoom: the latter
+  // assumes the image fills the box, but a photo whose aspect ratio differs from
+  // the box is letterboxed, so box*zoom over-estimates the extent in the
+  // letterboxed dimension and the image drifts toward that edge.
+  // img_width/img_height are at th->img_surf_zoom; scale to the new zoom zd. This
+  // references the surface zoom directly (not the per-step z_ratio), so it stays
+  // correct across a whole deferred gesture where the surface is never reloaded.
+  const float zr = (th->img_surf_zoom > 0.0f) ? zd / th->img_surf_zoom : 1.0f;
+  const float effective_w = (float)th->img_width * zr;
+  const float effective_h = (float)th->img_height * zr;
+  th->zoomx = fmaxf((float)iw - effective_w,
                     fminf(0.0f, iw / 2.0 - (iw / 2.0 - th->zoomx) * z_ratio));
-  th->zoomy = fmaxf(ih - th->img_height * z_ratio,
+  th->zoomy = fmaxf((float)ih - effective_h,
                     fminf(0.0f, ih / 2.0 - (ih / 2.0 - th->zoomy) * z_ratio));
 
-  dt_thumbnail_image_refresh(th);
+  if(deferred)
+    dt_thumbnail_image_preview_zoom(th);
+  else
+    dt_thumbnail_image_refresh_zoom(th);
 
   return TRUE;
 }
 
 static gboolean _thumbs_zoom_add(dt_culling_t *table,
                                  const float zoom_delta,
-                                 const float x_root,
-                                 const float y_root, int state)
+                                 const float x_culling,
+                                 const float y_culling,
+                                 const int state,
+                                 const gboolean deferred)
 {
   const int max_in_memory_images = _get_max_in_memory_images();
   if(table->mode == DT_CULLING_MODE_CULLING && table->thumbs_count > max_in_memory_images)
@@ -435,7 +487,7 @@ static gboolean _thumbs_zoom_add(dt_culling_t *table,
         dt_thumbnail_t *th = l->data;
         if(th->imgid == mouseid)
         {
-          if(_zoom_to_x_root(th, x_root, y_root, zoom_delta))
+          if(_zoom_to_x_root(th, x_culling, y_culling, zoom_delta, deferred))
             _set_table_zoom_ratio(table, th);
           break;
         }
@@ -443,30 +495,42 @@ static gboolean _thumbs_zoom_add(dt_culling_t *table,
     }
     else
     {
+      // Synchronized zoom: compute the focal point in the cursor thumb's
+      // image-local coordinates, then apply that same image-local focal point
+      // to every thumbnail so all views zoom around the equivalent location.
       const dt_imgid_t mouseid = dt_control_get_mouse_over_id();
-      int x_offset = 0;
-      int y_offset = 0;
-      gboolean to_pointer = FALSE;
-
-      // get the offset for the image under the cursor
+      dt_thumbnail_t *cursor_th = NULL;
       for(GList *l = table->list; l; l = g_list_next(l))
       {
         dt_thumbnail_t *th = l->data;
         if(th->imgid == mouseid)
         {
-          _get_root_offset(th->w_image_box, x_root, y_root, &x_offset, &y_offset);
-          to_pointer = TRUE;
+          cursor_th = th;
           break;
         }
       }
 
-      // apply the offset to all images
-      for(GList *l = table->list; l; l = g_list_next(l))
+      if(cursor_th)
       {
-        dt_thumbnail_t *th = l->data;
-        if(to_pointer == TRUE ? _zoom_and_shift(th, x_offset, y_offset, zoom_delta)
-                              : _zoom_to_center(th, zoom_delta))
-          _set_table_zoom_ratio(table, th);
+        const int posx = x_culling - cursor_th->x;
+        const int posy = y_culling - cursor_th->y;
+        for(GList *l = table->list; l; l = g_list_next(l))
+        {
+          dt_thumbnail_t *th = l->data;
+          if(_zoom_and_shift(th, posx, posy, zoom_delta, deferred))
+            _set_table_zoom_ratio(table, th);
+        }
+      }
+      else
+      {
+        // No image under cursor (e.g. gesture outside any thumbnail) —
+        // fall back to zooming all thumbnails toward their centers.
+        for(GList *l = table->list; l; l = g_list_next(l))
+        {
+          dt_thumbnail_t *th = l->data;
+          if(_zoom_to_center(th, zoom_delta, deferred))
+            _set_table_zoom_ratio(table, th);
+        }
       }
     }
   }
@@ -474,9 +538,15 @@ static gboolean _thumbs_zoom_add(dt_culling_t *table,
   {
     // FULL PREVIEW or CULLING with 1 image
     dt_thumbnail_t *th = table->list->data;
-    if(_zoom_to_x_root(th, x_root, y_root, zoom_delta))
+    if(_zoom_to_x_root(th, x_culling, y_culling, zoom_delta, deferred))
       _set_table_zoom_ratio(table, th);
   }
+
+  // Deferred gestures only rescale the stale surface; arm the safety-net timer
+  // so the proper surface reload still happens shortly after scrolling stops
+  // even if no smooth-scroll "stop" event arrives to call dt_culling_zoom_end().
+  if(deferred)
+    _schedule_zoom_finalize(table);
 
   return TRUE;
 }
@@ -486,21 +556,21 @@ static void _zoom_thumb_fit(dt_thumbnail_t *th)
   th->zoom = 1.0;
   th->zoomx = 0;
   th->zoomy = 0;
-  dt_thumbnail_image_refresh(th);
+  dt_thumbnail_image_refresh_zoom(th);
 }
 
 static gboolean _zoom_thumb_max(dt_thumbnail_t *th,
-                                const float x_root,
-                                const float y_root)
+                                const float x_culling,
+                                const float y_culling)
 {
   dt_thumbnail_get_zoom100(th);
-  return _zoom_to_x_root(th, x_root, y_root, ZOOM_MAX);
+  return _zoom_to_x_root(th, x_culling, y_culling, ZOOM_MAX, FALSE);
 }
 
 // toggle zoom max / zoom fit of image currently having mouse over id
 static void _toggle_zoom_current(dt_culling_t *table,
-                                 const float x_root,
-                                 const float y_root)
+                                 const float x_culling,
+                                 const float y_culling)
 {
   const dt_imgid_t id = dt_control_get_mouse_over_id();
   for(GList *l = table->list; l; l = g_list_next(l))
@@ -509,7 +579,7 @@ static void _toggle_zoom_current(dt_culling_t *table,
     if(th->imgid == id)
     {
       if(th->zoom_100 < 1.0 || th->zoom < th->zoom_100)
-        _zoom_thumb_max(th, x_root, y_root);
+        _zoom_thumb_max(th, x_culling, y_culling);
       else
         _zoom_thumb_fit(th);
       break;
@@ -519,13 +589,13 @@ static void _toggle_zoom_current(dt_culling_t *table,
 
 // toggle zoom max / zoom fit of all images in culling table
 static void _toggle_zoom_all(dt_culling_t *table,
-                             const float x_root,
-                             const float y_root)
+                             const float x_culling,
+                             const float y_culling)
 {
   gboolean zmax = TRUE;
   for(GList *l = table->list; l; l = g_list_next(l))
   {
-    dt_thumbnail_t *th = l->data;
+    const dt_thumbnail_t *th = l->data;
     if(th->zoom_100 < 1.0 || th->zoom < th->zoom_100)
     {
       zmax = FALSE;
@@ -536,7 +606,48 @@ static void _toggle_zoom_all(dt_culling_t *table,
   if(zmax)
     dt_culling_zoom_fit(table);
   else
-    _thumbs_zoom_add(table, ZOOM_MAX, x_root, y_root, 0);
+    _thumbs_zoom_add(table, ZOOM_MAX, x_culling, y_culling, 0, FALSE);
+}
+
+static void _update_selected_thumbnail(dt_culling_t *table,
+                                       const dt_imgid_t old_sel)
+{
+  for(GList *l = table->list; l; l = g_list_next(l))
+  {
+    const dt_thumbnail_t *th = l->data;
+    if (th->imgid == old_sel)
+    {
+      dt_gui_remove_class(th->w_main, "dt_culling_selected");
+      gtk_widget_queue_draw(th->w_main);
+    }
+    else if(th->imgid == table->selection)
+    {
+      dt_gui_add_class(th->w_main, "dt_culling_selected");
+      gtk_widget_queue_draw(th->w_main);
+    }
+  }
+}
+
+static gboolean _event_gesture(GtkWidget *widget,
+                               GdkEvent *event,
+                               gpointer user_data)
+{
+  if(event->type != GDK_TOUCHPAD_PINCH) return FALSE;
+  const GdkEventTouchpadPinch *pinch = &event->touchpad_pinch;
+  dt_print(DT_DEBUG_INPUT,
+           "[culling gesture] pinch phase=%d x=%.1f y=%.1f dx=%.3f dy=%.3f scale=%.6f state=0x%x",
+           pinch->phase, pinch->x, pinch->y, pinch->dx, pinch->dy, pinch->scale, pinch->state);
+  // Forward root (screen-absolute) coordinates — same convention as _event_scroll
+  // passing e->x_root, e->y_root.  Using pinch->x_root avoids a manual conversion
+  // via gdk_window_get_origin that was producing the wrong focal point.
+  dt_view_manager_gesture_pinch(darktable.view_manager,
+                                pinch->x_root, pinch->y_root,
+                                pinch->dx, pinch->dy,
+                                pinch->phase,
+                                pinch->scale,
+                                pinch->state & 0xf);
+  gtk_widget_queue_draw(widget);
+  return TRUE;
 }
 
 static gboolean _event_scroll(GtkWidget *widget,
@@ -545,33 +656,144 @@ static gboolean _event_scroll(GtkWidget *widget,
 {
   GdkEventScroll *e = (GdkEventScroll *)event;
   dt_culling_t *table = (dt_culling_t *)user_data;
-  int delta;
 
+  GdkDevice *device = gdk_event_get_source_device(event);
+  dt_print(DT_DEBUG_INPUT,
+           "[culling scroll] direction=%d smooth=%s stop=%s ctrl=%s"
+           " device='%s' source-type=%d x_root=%.1f y_root=%.1f"
+           " delta_x=%.3f delta_y=%.3f state=0x%x",
+           e->direction,
+           e->direction == GDK_SCROLL_SMOOTH ? "yes" : "no",
+           e->is_stop ? "yes" : "no",
+           dt_modifier_is(e->state, GDK_CONTROL_MASK) ? "yes" : "no",
+           device ? gdk_device_get_name(device) : "<none>",
+           device ? (int)gdk_device_get_source(device) : -1,
+           e->x_root, e->y_root,
+           e->delta_x, e->delta_y, e->state);
+
+  // ctrl + smooth scroll: apply fractional zoom on every event so the zoom
+  // feels seamless rather than stepped.  This must come before the integer-
+  // accumulator path below, which would otherwise batch several events into
+  // a single coarse 0.5-unit step.
+  //
+  // Scroll stop event: trigger a proper surface reload now that the gesture is
+  // done. We deliberately do NOT require ctrl to still be held here: the stop
+  // event often arrives after the user has released ctrl, and a deferred zoom
+  // must be finalised regardless. (If no zoom was pending this is a no-op, and
+  // the safety-net timer in _thumbs_zoom_add covers devices that never emit a
+  // stop event at all.)
+  if(e->direction == GDK_SCROLL_SMOOTH && e->is_stop)
+  {
+    dt_culling_zoom_end(table);
+    return TRUE;
+  }
+
+  if(e->direction == GDK_SCROLL_SMOOTH && !e->is_stop
+     && dt_modifiers_include(e->state, GDK_CONTROL_MASK))
+  {
+    gdouble dx = 0.0, dy = 0.0;
+    if(dt_gui_get_scroll_deltas(e, &dx, &dy) && (dx != 0.0 || dy != 0.0))
+    {
+    // dt_gui_get_scroll_deltas gives the raw fractional platform delta.
+      // Scale so that one full unit of scroll (delta_y == 1.0) matches the
+      // 0.5 zoom_delta of a discrete mouse-wheel click.
+      const float zoom_delta = (float)(-(dx + dy) * 0.5);
+      // convert screen to culling coordinates
+      int ox = 0, oy = 0;
+      GdkWindow *win = gtk_widget_get_window(table->widget);
+      if(win)
+        gdk_window_get_origin(win, &ox, &oy);
+      const float x_culling = e->x_root - ox;
+      const float y_culling = e->y_root - oy;
+      dt_print(DT_DEBUG_INPUT,
+               "[culling scroll] ctrl+smooth zoom_delta=%.4f x_culling=%.1f y_culling=%.1f",
+               zoom_delta, x_culling, y_culling);
+      if(fabsf(zoom_delta) > 0.001f)
+        _thumbs_zoom_add(table, zoom_delta, x_culling, y_culling, e->state, TRUE);
+    }
+    return TRUE;
+  }
+
+  // Smooth scroll (touchpad two-finger swipe): pan zoomed images or navigate images.
+  // We check before the unit-delta path so fractional smooth scroll is used for panning
+  // with full fidelity rather than being accumulated into integer steps.
+  if(e->direction == GDK_SCROLL_SMOOTH && !e->is_stop
+     && !dt_modifiers_include(e->state, GDK_CONTROL_MASK))
+  {
+    // Check if any thumbnail is zoomed in; if so, pan instead of navigate.
+    float fz = 1.0f;
+    for(GList *l = table->list; l; l = g_list_next(l))
+    {
+      const dt_thumbnail_t *th = l->data;
+      fz = fmaxf(fz, th->zoom);
+    }
+    dt_print(DT_DEBUG_INPUT,
+             "[culling scroll] smooth: max_zoom=%.3f -> %s",
+             fz, fz > 1.0f ? "pan path" : "navigate path");
+    if(fz > 1.0f)
+    {
+      gdouble dx = 0.0, dy = 0.0;
+      if(dt_gui_get_scroll_deltas(e, &dx, &dy) && (dx != 0.0 || dy != 0.0))
+      {
+        // dt_gui_get_scroll_deltas returns platform-normalised fractional units;
+        // scale to pixel-scale (matches the factor used by the center-widget pan path).
+        dt_print(DT_DEBUG_INPUT,
+                 "[culling scroll] panning dx=%.3f dy=%.3f (scaled: dx=%.1f dy=%.1f)",
+                 dx, dy, dx * 50.0, dy * 50.0);
+        dt_culling_pan_move(table, (float)(-dx * 50.0), (float)(-dy * 50.0), e->state);
+      }
+      else
+      {
+        dt_print(DT_DEBUG_INPUT, "[culling scroll] smooth pan: no delta from dt_gui_get_scroll_deltas");
+      }
+      return TRUE;
+    }
+  }
+
+  int delta;
   if(dt_gui_get_scroll_unit_delta(e, &delta))
   {
     if(dt_modifiers_include(e->state, GDK_CONTROL_MASK))
     {
       // zooming
       const float zoom_delta = delta < 0 ? 0.5f : -0.5f;
-      _thumbs_zoom_add(table, zoom_delta, e->x_root, e->y_root, e->state);
+      // convert screen to culling coordinates
+      int ox = 0, oy = 0;
+      GdkWindow *win = gtk_widget_get_window(table->widget);
+      if(win)
+        gdk_window_get_origin(win, &ox, &oy);
+      const float x_culling = e->x_root - ox;
+      const float y_culling = e->y_root - oy;
+      dt_print(DT_DEBUG_INPUT,
+               "[culling scroll] ctrl+scroll zoom_delta=%.2f x_culling=%.1f y_culling=%.1f",
+               zoom_delta, x_culling, y_culling);
+      // discrete wheel: a single click has no continuous gesture and emits no
+      // smooth is_stop event to finalise it, so reload the surface immediately
+      // (still cheap — the native mipmap surface cache is reused).  Leaving it
+      // deferred would freeze the image at a stale, scaled-up resolution.
+      _thumbs_zoom_add(table, zoom_delta, x_culling, y_culling, e->state, FALSE);
     }
     else
     {
       const int move = delta < 0 ? -1 : 1;
+      dt_print(DT_DEBUG_INPUT, "[culling scroll] navigate move=%d", move);
       _thumbs_move(table, move);
     }
   }
   return TRUE;
 }
 
-static gboolean _event_draw(GtkWidget *widget, cairo_t *cr, gpointer user_data)
+static gboolean _event_draw(GtkWidget *widget,
+                            cairo_t *cr,
+                            gpointer user_data)
 {
   if(!GTK_IS_CONTAINER(gtk_widget_get_parent(widget))) return TRUE;
 
   // we render the background (can be visible if before first image /
   // after last image)
   GtkStyleContext *context = gtk_widget_get_style_context(widget);
-  gtk_render_background(context, cr, 0, 0, gtk_widget_get_allocated_width(widget),
+  gtk_render_background(context, cr, 0, 0,
+                        gtk_widget_get_allocated_width(widget),
                         gtk_widget_get_allocated_height(widget));
 
   // but we don't really want to draw something, this is just to know
@@ -596,7 +818,8 @@ static gboolean _event_leave_notify(GtkWidget *widget,
   // if we leave thumbtable in favour of an inferior (a thumbnail)
   // it's not a real leave !  same if this is not a mouse move action
   // (shortcut that activate a button for example)
-  if(event->detail == GDK_NOTIFY_INFERIOR || event->mode == GDK_CROSSING_GTK_GRAB
+  if(event->detail == GDK_NOTIFY_INFERIOR
+     || event->mode == GDK_CROSSING_GTK_GRAB
      || event->mode == GDK_CROSSING_GRAB)
     return FALSE;
 
@@ -624,27 +847,47 @@ static gboolean _event_button_press(GtkWidget *widget,
 {
   dt_culling_t *table = (dt_culling_t *)user_data;
 
-  if(event->button == 1 && event->type == GDK_BUTTON_PRESS)
+  if(event->button == GDK_BUTTON_PRIMARY
+     && event->type == GDK_BUTTON_PRESS)
   {
     // make sure any edition field loses the focus
     gtk_widget_grab_focus(dt_ui_center(darktable.gui->ui));
   }
 
-  if(event->button == 2)
+  if(event->button == GDK_BUTTON_MIDDLE)
   {
+    // convert screen coordinates to culling coordinates
+    int ox = 0, oy = 0;
+    GdkWindow *win = gtk_widget_get_window(table->widget);
+    if(win)
+      gdk_window_get_origin(win, &ox, &oy);
+    const float x_culling = event->x_root - ox;
+    const float y_culling = event->y_root - oy;
+
     // if shift is pressed, we work only with image hovered
     if(dt_modifier_is(event->state, GDK_SHIFT_MASK))
-      _toggle_zoom_current(table, event->x_root, event->y_root);
+      _toggle_zoom_current(table, x_culling, y_culling);
     else
-      _toggle_zoom_all(table, event->x_root, event->y_root);
+      _toggle_zoom_all(table, x_culling, y_culling);
     return TRUE;
   }
 
   const dt_imgid_t id = dt_control_get_mouse_over_id();
-
-  if(dt_is_valid_imgid(id) && event->button == 1 && event->type == GDK_2BUTTON_PRESS)
+  if(dt_is_valid_imgid(id)
+     && event->button == GDK_BUTTON_PRIMARY
+     && event->type == GDK_2BUTTON_PRESS)
   {
+    // we have to set again the selected image, because it was deselected
+    // during the previous GDK_BUTTON_PRESS event
+    const dt_imgid_t old_selection = table->selection;
+    table->selection = id;
     dt_view_manager_switch(darktable.view_manager, "darkroom");
+    if (id != old_selection)
+    {
+      _update_selected_thumbnail(table, old_selection);
+      dt_act_on_reset_cache(TRUE);
+      dt_act_on_reset_cache(FALSE);
+    }
     return TRUE;
   }
 
@@ -676,7 +919,7 @@ static gboolean _event_motion_notify(GtkWidget *widget,
   float fz = 1.0f;
   for(GList *l = table->list; l; l = g_list_next(l))
   {
-    dt_thumbnail_t *th = l->data;
+    const dt_thumbnail_t *th = l->data;
     fz = fmaxf(fz, th->zoom);
   }
 
@@ -719,12 +962,19 @@ static gboolean _event_motion_notify(GtkWidget *widget,
       int iw = 0;
       int ih = 0;
       gtk_widget_get_size_request(th->w_image, &iw, &ih);
-      const int mindx = iw * darktable.gui->ppd_thb - th->img_width;
-      const int mindy = ih * darktable.gui->ppd_thb - th->img_height;
-      if(th->zoomx > 0) th->zoomx = 0;
-      if(th->zoomx < mindx) th->zoomx = mindx;
-      if(th->zoomy > 0) th->zoomy = 0;
-      if(th->zoomy < mindy) th->zoomy = mindy;
+      // bound to the real rendered image extent (handles letterboxing), scaled to
+      // the current zoom in case the surface is still at the gesture-start zoom.
+      const float zr = (th->img_surf_zoom > 0.0f) ? th->zoom / th->img_surf_zoom : 1.0f;
+      const int mindx = (int)(iw * darktable.gui->ppd_thb - th->img_width * zr);
+      const int mindy = (int)(ih * darktable.gui->ppd_thb - th->img_height * zr);
+      if(th->zoomx > 0)
+        th->zoomx = 0;
+      if(th->zoomx < mindx)
+        th->zoomx = mindx;
+      if(th->zoomy > 0)
+        th->zoomy = 0;
+      if(th->zoomy < mindy)
+        th->zoomy = mindy;
     }
 
     table->pan_x = x;
@@ -745,6 +995,32 @@ static gboolean _event_button_release(GtkWidget *widget,
 {
   dt_culling_t *table = (dt_culling_t *)user_data;
   table->panning = FALSE;
+
+  const dt_imgid_t overid = dt_control_get_mouse_over_id();
+  // if the act_on algorithm need a specific culling "selection",
+  // we use a very simple culling-specific selection
+  if(dt_act_on_use_culling_selection()
+     && dt_is_valid_imgid(overid)
+     && event->button == GDK_BUTTON_PRIMARY)
+  {
+    const dt_imgid_t old_sel = table->selection;
+    if(table->selection == overid)
+    {
+      // this image is already selected
+      // so we deselect it
+      table->selection = NO_IMGID;
+    }
+    else
+      table->selection = overid;
+
+    // now we update the thumbnail class to reflect the selected state
+    _update_selected_thumbnail(table, old_sel);
+
+    // and we reset the cache
+    dt_act_on_reset_cache(TRUE);
+    dt_act_on_reset_cache(FALSE);
+  }
+
   return TRUE;
 }
 
@@ -755,22 +1031,32 @@ static void _dt_pref_change_callback(gpointer instance,
   if(!user_data) return;
   dt_culling_t *table = (dt_culling_t *)user_data;
 
+  // adjust the act_on algo class if needed
+  dt_act_on_set_class(table->widget);
+
   dt_culling_full_redraw(table, TRUE);
 
   for(GList *l = table->list; l; l = g_list_next(l))
   {
     dt_thumbnail_t *th = l->data;
-    th->overlay_timeout_duration = dt_conf_get_int("plugins/lighttable/overlay_timeout");
-    dt_thumbnail_reload_infos(th);
-    const float zoom_ratio = th->zoom_100 > 1 ? th->zoom / th->zoom_100 : table->zoom_ratio;
-    dt_thumbnail_resize(th, th->width, th->height, TRUE, zoom_ratio);
+    if(th)
+    {
+      th->overlay_timeout_duration = dt_conf_get_int("plugins/lighttable/overlay_timeout");
+      dt_thumbnail_reload_infos(th);
+      const float zoom_ratio = th->zoom_100 > 1
+        ? th->zoom / th->zoom_100
+        : table->zoom_ratio;
+
+      dt_thumbnail_resize(th, th->width, th->height, TRUE, zoom_ratio);
+    }
   }
   dt_get_sysresource_level();
   dt_opencl_update_settings();
   dt_configure_ppd_dpi(darktable.gui);
 }
 
-static void _dt_selection_changed_callback(gpointer instance, gpointer user_data)
+static void _dt_selection_changed_callback(gpointer instance,
+                                           gpointer user_data)
 {
   if(!user_data) return;
   dt_culling_t *table = (dt_culling_t *)user_data;
@@ -796,6 +1082,7 @@ static void _dt_selection_changed_callback(gpointer instance, gpointer user_data
     // clang-format on
     if(sqlite3_step(stmt) == SQLITE_ROW) sel_count = sqlite3_column_int(stmt, 0);
     sqlite3_finalize(stmt);
+
     const int nz = (sel_count <= 1)
       ? dt_conf_get_int("plugins/lighttable/culling_num_images")
       : sel_count;
@@ -827,7 +1114,8 @@ static void _dt_profile_change_callback(gpointer instance,
 }
 
 // this is called each time mouse_over id change
-static void _dt_mouse_over_image_callback(gpointer instance, gpointer user_data)
+static void _dt_mouse_over_image_callback(gpointer instance,
+                                          gpointer user_data)
 {
   if(!user_data) return;
   dt_culling_t *table = (dt_culling_t *)user_data;
@@ -859,7 +1147,7 @@ static void _dt_filmstrip_change(gpointer instance,
 }
 
 // get the class name associated with the overlays mode
-static gchar *_thumbs_get_overlays_class(dt_thumbnail_overlay_t over)
+static gchar *_thumbs_get_overlays_class(const dt_thumbnail_overlay_t over)
 {
   switch(over)
   {
@@ -880,17 +1168,20 @@ static gchar *_thumbs_get_overlays_class(dt_thumbnail_overlay_t over)
   }
 }
 
-dt_culling_t *dt_culling_new(dt_culling_mode_t mode)
+dt_culling_t *dt_culling_new(const dt_culling_mode_t mode)
 {
   dt_culling_t *table = calloc(1, sizeof(dt_culling_t));
   table->mode = mode;
   table->zoom_ratio = IMG_TO_FIT;
   table->widget = gtk_layout_new(NULL, NULL);
+  table->selection = NO_IMGID;
   dt_gui_add_class(table->widget, "dt_fullview");
+  dt_act_on_set_class(table->widget);
   // TODO dt_gui_add_help_link(table->widget, "lighttable_filemanager");
 
   // overlays
-  gchar *otxt = g_strdup_printf("plugins/lighttable/overlays/culling/%d", table->mode);
+  gchar *otxt = g_strdup_printf("plugins/lighttable/overlays/culling/%d",
+                                table->mode);
   table->overlays = dt_conf_get_int(otxt);
   g_free(otxt);
 
@@ -907,19 +1198,27 @@ dt_culling_t *dt_culling_new(dt_culling_mode_t mode)
     table->overlays_block_timeout = dt_conf_get_int(otxt);
   g_free(otxt);
 
-  otxt = g_strdup_printf("plugins/lighttable/tooltips/culling/%d", table->mode);
+  otxt = g_strdup_printf("plugins/lighttable/tooltips/culling/%d",
+                         table->mode);
   table->show_tooltips = dt_conf_get_bool(otxt);
   g_free(otxt);
 
   // set widget signals
   gtk_widget_set_events(table->widget,
-                        GDK_EXPOSURE_MASK | GDK_POINTER_MOTION_MASK
-                        | GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK
+                        GDK_EXPOSURE_MASK
+                        | GDK_POINTER_MOTION_MASK
+                        | GDK_BUTTON_PRESS_MASK
+                        | GDK_BUTTON_RELEASE_MASK
                         | GDK_STRUCTURE_MASK
-                        | GDK_ENTER_NOTIFY_MASK | GDK_LEAVE_NOTIFY_MASK);
+                        | GDK_ENTER_NOTIFY_MASK
+                        | GDK_LEAVE_NOTIFY_MASK
+                        | GDK_TOUCHPAD_GESTURE_MASK);
+
   gtk_widget_set_app_paintable(table->widget, TRUE);
   gtk_widget_set_can_focus(table->widget, TRUE);
 
+  g_signal_connect(G_OBJECT(table->widget), "event",
+                   G_CALLBACK(_event_gesture), table);
   g_signal_connect(G_OBJECT(table->widget), "scroll-event",
                    G_CALLBACK(_event_scroll), table);
   g_signal_connect(G_OBJECT(table->widget), "draw",
@@ -936,11 +1235,16 @@ dt_culling_t *dt_culling_new(dt_culling_mode_t mode)
                    G_CALLBACK(_event_button_release), table);
 
   // we register globals signals
-  DT_CONTROL_SIGNAL_CONNECT(DT_SIGNAL_MOUSE_OVER_IMAGE_CHANGE, _dt_mouse_over_image_callback, table);
-  DT_CONTROL_SIGNAL_CONNECT(DT_SIGNAL_CONTROL_PROFILE_USER_CHANGED, _dt_profile_change_callback, table);
-  DT_CONTROL_SIGNAL_CONNECT(DT_SIGNAL_PREFERENCES_CHANGE, _dt_pref_change_callback, table);
-  DT_CONTROL_SIGNAL_CONNECT(DT_SIGNAL_VIEWMANAGER_THUMBTABLE_ACTIVATE, _dt_filmstrip_change, table);
-  DT_CONTROL_SIGNAL_CONNECT(DT_SIGNAL_SELECTION_CHANGED, _dt_selection_changed_callback, table);
+  DT_CONTROL_SIGNAL_CONNECT(DT_SIGNAL_MOUSE_OVER_IMAGE_CHANGE,
+                            _dt_mouse_over_image_callback, table);
+  DT_CONTROL_SIGNAL_CONNECT(DT_SIGNAL_CONTROL_PROFILE_USER_CHANGED,
+                            _dt_profile_change_callback, table);
+  DT_CONTROL_SIGNAL_CONNECT(DT_SIGNAL_PREFERENCES_CHANGE,
+                            _dt_pref_change_callback, table);
+  DT_CONTROL_SIGNAL_CONNECT(DT_SIGNAL_VIEWMANAGER_THUMBTABLE_ACTIVATE,
+                            _dt_filmstrip_change, table);
+  DT_CONTROL_SIGNAL_CONNECT(DT_SIGNAL_SELECTION_CHANGED,
+                            _dt_selection_changed_callback, table);
 
   g_object_ref(table->widget);
 
@@ -949,15 +1253,17 @@ dt_culling_t *dt_culling_new(dt_culling_mode_t mode)
 
 // initialize offset, ... values
 // to be used when reentering culling
-void dt_culling_init(dt_culling_t *table, const int fallback_offset)
+void dt_culling_init(dt_culling_t *table,
+                     const int fallback_offset,
+                     const dt_lighttable_culling_restriction_t restriction)
 {
   /** HOW it works :
    *
    * For the first image :
-   *  image_over OR first selected OR first OR -1
+   *  act_on main image or fallback_offset if no image
    *
-   * For the navigation in selection :
-   *  culling dynamic mode                       => OFF
+   * For the automatic detection of navigation in selection :
+   *  culling dynamic mode                       => OFF (whatever the restriction value)
    *  first image in selection AND selection > 1 => ON
    *  otherwise                                  => OFF
    *
@@ -971,6 +1277,9 @@ void dt_culling_init(dt_culling_t *table, const int fallback_offset)
   table->selection_sync = FALSE;
   table->zoom_ratio = IMG_TO_FIT;
   table->view_width = 0; // in order to force a full redraw
+
+  if(restriction == DT_LIGHTTABLE_CULLING_RESTRICTION_SELECTION)
+    table->navigate_inside_selection = TRUE;
 
   // reset remaining zooming values if any
   for(GList *l = table->list; l; l = g_list_next(l))
@@ -988,35 +1297,7 @@ void dt_culling_init(dt_culling_t *table, const int fallback_offset)
             == DT_LIGHTTABLE_LAYOUT_CULLING_DYNAMIC);
 
   // get first id
-  sqlite3_stmt *stmt;
-  gchar *query = NULL;
-  dt_imgid_t first_id = NO_IMGID;
-
-  // prioritize mouseover if available
-  first_id = dt_control_get_mouse_over_id();
-
-  // try active images
-  if(!dt_is_valid_imgid(first_id) && darktable.view_manager->active_images)
-     first_id = GPOINTER_TO_INT(darktable.view_manager->active_images->data);
-
-  // overwrite with selection no active images
-  if(!dt_is_valid_imgid(first_id))
-  {
-    // search the first selected image
-    // clang-format off
-    DT_DEBUG_SQLITE3_PREPARE_V2
-      (dt_database_get(darktable.db),
-       "SELECT col.imgid"
-       " FROM memory.collected_images AS col, main.selected_images as sel"
-       " WHERE col.imgid=sel.imgid"
-       " ORDER BY col.rowid"
-       " LIMIT 1",
-       -1, &stmt, NULL);
-    // clang-format on
-    if(sqlite3_step(stmt) == SQLITE_ROW)
-      first_id = sqlite3_column_int(stmt, 0);
-    sqlite3_finalize(stmt);
-  }
+  dt_imgid_t first_id = dt_act_on_get_main_image();
 
   // if no new offset is available until now, we continue with the fallback one
   if(!dt_is_valid_imgid(first_id))
@@ -1036,6 +1317,7 @@ void dt_culling_init(dt_culling_t *table, const int fallback_offset)
 
   // selection count
   int sel_count = 0;
+  sqlite3_stmt *stmt;
   // clang-format off
   DT_DEBUG_SQLITE3_PREPARE_V2
     (dt_database_get(darktable.db),
@@ -1065,7 +1347,7 @@ void dt_culling_init(dt_culling_t *table, const int fallback_offset)
   // is first_id inside selection ?
   gboolean inside = FALSE;
   // clang-format off
-  query = g_strdup_printf
+  gchar *query = g_strdup_printf
     ("SELECT col.imgid"
      " FROM memory.collected_images AS col, main.selected_images AS sel"
      " WHERE col.imgid=sel.imgid AND col.imgid=%d",
@@ -1078,7 +1360,8 @@ void dt_culling_init(dt_culling_t *table, const int fallback_offset)
 
   if(table->mode == DT_CULLING_MODE_PREVIEW)
   {
-    table->navigate_inside_selection = (sel_count > 1 && inside);
+    if(restriction == DT_LIGHTTABLE_CULLING_RESTRICTION_AUTO)
+      table->navigate_inside_selection = (sel_count > 1 && inside);
     table->selection_sync = (sel_count == 1 && inside);
   }
   else if(table->mode == DT_CULLING_MODE_CULLING)
@@ -1110,7 +1393,8 @@ void dt_culling_init(dt_culling_t *table, const int fallback_offset)
     }
 
     // we now determine if we limit culling images to the selection
-    table->navigate_inside_selection = (!table->selection_sync && inside);
+    if(restriction == DT_LIGHTTABLE_CULLING_RESTRICTION_AUTO)
+      table->navigate_inside_selection = (!table->selection_sync && inside);
   }
 
   table->offset = _thumb_get_rowid(first_id);
@@ -1126,12 +1410,14 @@ static void _thumbs_prefetch(dt_culling_t *table)
   int maxh = 0;
   for(GList *l = table->list; l; l = g_list_next(l))
   {
-    dt_thumbnail_t *th = l->data;
+    const dt_thumbnail_t *th = l->data;
     maxw = MAX(maxw, th->width);
     maxh = MAX(maxh, th->height);
   }
+  const int32_t mipwidth = maxw * darktable.gui->ppd;
+  const int32_t mipheight = maxh * darktable.gui->ppd;
   dt_mipmap_size_t mip =
-    dt_mipmap_cache_get_matching_size(darktable.mipmap_cache, maxw, maxh);
+    dt_mipmap_cache_get_matching_size(mipwidth, mipheight);
 
   // prefetch next image
   gchar *query;
@@ -1167,7 +1453,7 @@ static void _thumbs_prefetch(dt_culling_t *table)
   {
     const dt_imgid_t id = sqlite3_column_int(stmt, 0);
     if(dt_is_valid_imgid(id))
-      dt_mipmap_cache_get(darktable.mipmap_cache, NULL, id, mip, DT_MIPMAP_PREFETCH, 'r');
+      dt_mipmap_cache_get(NULL, id, mip, DT_MIPMAP_PREFETCH, 'r');
   }
   sqlite3_finalize(stmt);
   g_free(query);
@@ -1204,7 +1490,7 @@ static void _thumbs_prefetch(dt_culling_t *table)
   {
     const dt_imgid_t id = sqlite3_column_int(stmt, 0);
     if(dt_is_valid_imgid(id))
-      dt_mipmap_cache_get(darktable.mipmap_cache, NULL, id, mip, DT_MIPMAP_PREFETCH, 'r');
+      dt_mipmap_cache_get(NULL, id, mip, DT_MIPMAP_PREFETCH, 'r');
   }
   sqlite3_finalize(stmt);
 }
@@ -1221,13 +1507,14 @@ static gboolean _thumbs_recreate_list_at(dt_culling_t *table,
   // get width/height before the list is destroyed
   if(table->list)
   {
-    dt_thumbnail_t *th_model = table->list->data;
+    const dt_thumbnail_t *th_model = table->list->data;
     nw = th_model->width;
     nh = th_model->height;
   }
 
   // let's create a hashtable of table->list in order to speddup search in next loop
-  GHashTable *htable = g_hash_table_new_full(g_int_hash, g_int_equal, NULL, _list_remove_thumb);
+  GHashTable *htable = g_hash_table_new_full(g_int_hash, g_int_equal,
+                                             NULL, _list_remove_thumb);
   for(const GList *l = table->list; l; l = g_list_next(l))
   {
     dt_thumbnail_t *th = l->data;
@@ -1343,7 +1630,7 @@ static gboolean _thumbs_recreate_list_at(dt_culling_t *table,
   // and we ensure that we have the right offset
   if(table->list)
   {
-    dt_thumbnail_t *thumb = table->list->data;
+    const dt_thumbnail_t *thumb = table->list->data;
     table->offset_imgid = thumb->imgid;
     table->offset = _thumb_get_rowid(thumb->imgid);
   }
@@ -1366,18 +1653,20 @@ static gboolean _thumbs_compute_positions(dt_culling_t *table)
     return TRUE;
   }
 
-  // initialize horizontal and vertical spacing distance between thumbnails with lowest value possible. Will be scaled up later.
+  // initialize horizontal and vertical spacing distance between
+  // thumbnails with lowest value possible. Will be scaled up later.
   const int spacing = 1;
 
-  // reinit size and positions of each thumbnail, remember size from biggest thumbnail, calculate average thumbnail ratio
+  // reinit size and positions of each thumbnail, remember size from
+  // biggest thumbnail, calculate average thumbnail ratio
   int max_thumb_height = 0;
 
   for(GList *l = table->list; l; l = g_list_next(l))
   {
     dt_thumbnail_t *thumb = l->data;
     const float aspect_ratio = thumb->aspect_ratio;
-    thumb->width = (gint)(sqrt(aspect_ratio) * 100);
-    thumb->height = (gint)(1 / sqrt(aspect_ratio) * 100);
+    thumb->width = (gint)(sqrtf(aspect_ratio) * 100);
+    thumb->height = (gint)(1 / sqrtf(aspect_ratio) * 100);
     thumb->x = thumb->y = 0;
 
     max_thumb_height = MAX(max_thumb_height, thumb->height);
@@ -1393,8 +1682,9 @@ static gboolean _thumbs_compute_positions(dt_culling_t *table)
   // in this case, images 1 and 3 would be stacked in one slot and image 2 will be placed in a new slot alone.
   // if all images have similar heights, they will not be stacked and placed in separate slots.
 
-  // Note: Stacking only make sense for images in the same row as the portrait image.
-  //       The algorithm does not check for this so unnecessary stacking can occur.
+  // Note: Stacking only make sense for images in the same row as the
+  //       portrait image.  The algorithm does not check for this so
+  //       unnecessary stacking can occur.
 
   GList *slots = NULL;
   int max_slot_heigth = 0;
@@ -1446,9 +1736,9 @@ static gboolean _thumbs_compute_positions(dt_culling_t *table)
   slots = g_list_reverse(slots);  // list was built in reverse order, so un-reverse it
   const int number_of_slots = g_list_length(slots);
 
-  // finished assigning thumbnails to slots
-  // we also know max slot height, so we can now scale all slots to this height
-  // and then calculate average slot height and width
+  // finished assigning thumbnails to slots we also know max slot
+  // height, so we can now scale all slots to this height and then
+  // calculate average slot height and width
   int slot_counter = 0;
   float avg_slot_aspect_r = 0.0f;
   int total_slot_width = 0;
@@ -1486,14 +1776,18 @@ static gboolean _thumbs_compute_positions(dt_culling_t *table)
 
       if(number_of_slots == 2)
       {
-        // limit scaling factor to 20% if only two images are displayed so that slight differences are corrected
-        // but portrait and landscape orientation are displayed at similar sizes
+        // limit scaling factor to 20% if only two images are
+        // displayed so that slight differences are corrected but
+        // portrait and landscape orientation are displayed at similar
+        // sizes
         stack_heigth_factor = MIN(stack_heigth_factor, 1.2);
       }
       else
       {
-        // limit scaling so that width does not increase to more than twice the average thumbnail width
-        stack_heigth_factor = MIN(stack_heigth_factor, 2 * avg_thumb_width / (float)thumb->width);
+        // limit scaling so that width does not increase to more than
+        // twice the average thumbnail width
+        stack_heigth_factor = MIN(stack_heigth_factor,
+                                  2 * avg_thumb_width / (float)thumb->width);
       }
       thumb->height *= stack_heigth_factor;
       thumb->width *= stack_heigth_factor;
@@ -1511,7 +1805,8 @@ static gboolean _thumbs_compute_positions(dt_culling_t *table)
   }
   total_slot_width -= spacing;
 
-  // variables to hold vertical and horizontal width of all thumbnails after their final placement
+  // variables to hold vertical and horizontal width of all thumbnails
+  // after their final placement
   unsigned int planned_total_width = total_slot_width;
   unsigned int planned_total_height = max_thumb_height;
 
@@ -1541,7 +1836,7 @@ static gboolean _thumbs_compute_positions(dt_culling_t *table)
 
     deviation_tmp = _absmul(planned_total_width_tmp / (float)planned_total_height_tmp, screen_aspect_r);
 
-  } while (deviation_tmp < deviation);
+  } while(deviation_tmp < deviation);
 
   int total_height = 0;
   int total_width = 0;
@@ -1555,11 +1850,14 @@ static gboolean _thumbs_compute_positions(dt_culling_t *table)
     const int row_width_limit = planned_total_width;
 
     // work with one slot at a time
-    for(GList *slot_iter = slots; slot_iter; slot_iter = g_list_next(slot_iter))
+    for(GList *slot_iter = slots;
+        slot_iter;
+        slot_iter = g_list_next(slot_iter))
     {
       GList *slot = (GList *)slot_iter->data;
 
-      // Calculate max width and total height of thumbs in the slot so that all thumbs can be centered within the slot
+      // Calculate max width and total height of thumbs in the slot so
+      // that all thumbs can be centered within the slot.
       int slot_max_thumb_width = 0;
       int slot_total_heigth = 0;
       for(GList *slot_thumb_iter = slot;
@@ -1570,16 +1868,19 @@ static gboolean _thumbs_compute_positions(dt_culling_t *table)
         slot_max_thumb_width = MAX(slot_max_thumb_width, thumb->width);
         slot_total_heigth = slot_total_heigth + thumb->height + spacing;
       }
-      // don't include bottom spacing in height calculation
+      //  don't include bottom spacing in height calculation
       slot_total_heigth -= spacing;
 
-      // if slot is about to be placed outside of allocated horizontal space, place the slot in a new row
-      //  we allow for 20% thumbnail width tolerance to account for the influence of images with mixed aspect ratios in the math
+      //  if slot is about to be placed outside of allocated horizontal
+      //  space, place the slot in a new row we allow for 20%
+      //  thumbnail width tolerance to account for the influence of
+      //  images with mixed aspect ratios in the math
       gboolean create_new_row = FALSE;
 
-      // if the row limit is exceeded by more than 60% of a slot place it in the next row
-      //  unless this is the last thumbnail and squeezing it into the current row results
-      //  in a better placement ratio than opening a new row.
+      //  if the row limit is exceeded by more than 60% of a slot place
+      //  it in the next row unless this is the last thumbnail and
+      //  squeezing it into the current row results in a better
+      //  placement ratio than opening a new row.
       if(thumb_x + 0.4 * slot_max_thumb_width > row_width_limit)
       {
         create_new_row = TRUE;
@@ -1587,11 +1888,14 @@ static gboolean _thumbs_compute_positions(dt_culling_t *table)
         if(!slot_iter->next)
         {
           const float ratio_same_row = _absmul(
-            MAX(total_width, (thumb_x + slot_max_thumb_width)) / (float)MAX(total_height, row_y + slot_total_heigth),
+            MAX(total_width,
+                (thumb_x + slot_max_thumb_width)) / (float)MAX(total_height,
+                                                               row_y + slot_total_heigth),
             table->view_width / (float)table->view_height
           );
           const float ratio_new_row = _absmul(
-            MAX(total_width, slot_max_thumb_width) / (float)(total_height + slot_total_heigth),
+            MAX(total_width,
+                slot_max_thumb_width) / (float)(total_height + slot_total_heigth),
             table->view_width / (float)table->view_height
           );
 
@@ -1642,7 +1946,9 @@ static gboolean _thumbs_compute_positions(dt_culling_t *table)
 
   // loop through all thumbnails to apply offsets for final positioning
   // loop through rows
-  for(const GList *row_iter = rows; row_iter; row_iter = g_list_next(row_iter))
+  for(const GList *row_iter = rows;
+      row_iter;
+      row_iter = g_list_next(row_iter))
   {
     GList *row = (GList *)row_iter->data;
     int row_width = 0;
@@ -1695,7 +2001,9 @@ static gboolean _thumbs_compute_positions(dt_culling_t *table)
       yoff = (row_heigth - slot_heigth) / 2;
 
       // Apply vertical and horizontal offsets
-      for(GList *slot_thumb_iter = slot; slot_thumb_iter; slot_thumb_iter = g_list_next(slot_thumb_iter))
+      for(GList *slot_thumb_iter = slot;
+          slot_thumb_iter;
+          slot_thumb_iter = g_list_next(slot_thumb_iter))
       {
         dt_thumbnail_t *thumb = slot_thumb_iter->data;
         thumb->x += xoff;
@@ -1745,7 +2053,7 @@ void dt_culling_update_active_images_list(dt_culling_t *table)
   // and we effectively move and resize thumbs
   for(GList *l = table->list; l; l = g_list_next(l))
   {
-    dt_thumbnail_t *thumb = l->data;
+    const dt_thumbnail_t *thumb = l->data;
     // we update the active images list
     darktable.view_manager->active_images =
       g_slist_append(darktable.view_manager->active_images,
@@ -1756,7 +2064,8 @@ void dt_culling_update_active_images_list(dt_culling_t *table)
 }
 
 // recreate the list of thumbs if needed and recomputes sizes and positions if needed
-void dt_culling_full_redraw(dt_culling_t *table, const gboolean force)
+void dt_culling_full_redraw(dt_culling_t *table,
+                            const gboolean force)
 {
   if(!gtk_widget_get_visible(table->widget) && !force) return;
   // first, we see if we need to do something
@@ -1770,7 +2079,7 @@ void dt_culling_full_redraw(dt_culling_t *table, const gboolean force)
   int old_margin_y = 0;
   if(table->list)
   {
-    dt_thumbnail_t *thumb = table->list->data;
+    const dt_thumbnail_t *thumb = table->list->data;
     old_zx = thumb->zoomx;
     old_zy = thumb->zoomy;
     old_margin_x = gtk_widget_get_margin_start(thumb->w_image_box);
@@ -1834,7 +2143,7 @@ void dt_culling_full_redraw(dt_culling_t *table, const gboolean force)
     GList *ls = NULL;
     for(GList *l = table->list; l; l = g_list_next(l))
     {
-      dt_thumbnail_t *thumb = l->data;
+      const dt_thumbnail_t *thumb = l->data;
       ls = g_list_prepend(ls, GINT_TO_POINTER(thumb->imgid));
     }
     ls = g_list_reverse(ls);  // list was built in reverse order, so un-reverse it
@@ -1847,32 +2156,48 @@ void dt_culling_full_redraw(dt_culling_t *table, const gboolean force)
   // we prefetch next/previous images
   _thumbs_prefetch(table);
 
-  // ensure that no hidden image as the focus
-  const dt_imgid_t selid = dt_control_get_mouse_over_id();
-  if(selid >= 0)
+  // ensure that no hidden image as the focus or is selected
+  const dt_imgid_t overid = dt_control_get_mouse_over_id();
+  if(dt_is_valid_imgid(overid)
+     || dt_is_valid_imgid(table->selection))
   {
-    gboolean in_list = FALSE;
+    gboolean in_list_over = FALSE;
+    gboolean in_list_sel = FALSE;
     for(GList *l = table->list; l; l = g_list_next(l))
     {
-      dt_thumbnail_t *thumb = l->data;
-      if(thumb->imgid == selid)
+      const dt_thumbnail_t *thumb = l->data;
+      if(thumb->imgid == overid)
       {
-        in_list = TRUE;
-        break;
+        in_list_over = TRUE;
+        if(in_list_sel || !dt_is_valid_imgid(table->selection))
+          break;
+      }
+      if(thumb->imgid == table->selection)
+      {
+        in_list_sel = TRUE;
+        if(in_list_over || !dt_is_valid_imgid(overid))
+          break;
       }
     }
-    if(!in_list)
-    {
+    if(dt_is_valid_imgid(overid) && !in_list_over)
       dt_control_set_mouse_over_id(NO_IMGID);
+    if(dt_is_valid_imgid(table->selection) && !in_list_sel)
+    {
+      table->selection = NO_IMGID;
+      // and we reset the cache
+      dt_act_on_reset_cache(TRUE);
+      dt_act_on_reset_cache(FALSE);
     }
   }
 
-  dt_print(DT_DEBUG_LIGHTTABLE | DT_DEBUG_PERF, "[dt_culling_full_redraw] done in %0.04f sec", dt_get_wtime() - start);
+  dt_print(DT_DEBUG_LIGHTTABLE | DT_DEBUG_PERF,
+           "[dt_culling_full_redraw] done in %0.04f sec", dt_get_wtime() - start);
 
-  if(darktable.unmuted & DT_DEBUG_CACHE) dt_mipmap_cache_print(darktable.mipmap_cache);
+  if(darktable.unmuted & DT_DEBUG_CACHE) dt_mipmap_cache_print();
 }
 
-gboolean dt_culling_key_move(dt_culling_t *table, dt_culling_move_t move)
+gboolean dt_culling_key_move(dt_culling_t *table,
+                             const dt_culling_move_t move)
 {
   int val = 0;
   switch(move)
@@ -1905,7 +2230,8 @@ gboolean dt_culling_key_move(dt_culling_t *table, dt_culling_move_t move)
   return TRUE;
 }
 
-void dt_culling_change_offset_image(dt_culling_t *table, dt_imgid_t imgid)
+void dt_culling_change_offset_image(dt_culling_t *table,
+                                    const dt_imgid_t imgid)
 {
   table->offset = _thumb_get_rowid(imgid);
   dt_culling_full_redraw(table, TRUE);
@@ -1918,11 +2244,11 @@ void dt_culling_zoom_max(dt_culling_t *table)
   float y = 0;
   if(table->mode == DT_CULLING_MODE_PREVIEW && table->list)
   {
-    dt_thumbnail_t *th = table->list->data;
+    const dt_thumbnail_t *th = table->list->data;
     x = gtk_widget_get_allocated_width(th->w_image_box) / 2.0;
     y = gtk_widget_get_allocated_height(th->w_image_box) / 2.0;
   }
-  _thumbs_zoom_add(table, ZOOM_MAX, x, y, 0);
+  _thumbs_zoom_add(table, ZOOM_MAX, x, y, 0, FALSE);
 }
 
 void dt_culling_zoom_fit(dt_culling_t *table)
@@ -1934,8 +2260,128 @@ void dt_culling_zoom_fit(dt_culling_t *table)
   }
 }
 
+gboolean dt_culling_zoom_add(dt_culling_t *table,
+                             const float zoom_delta,
+                             const float x_root,
+                             const float y_root,
+                             const int state)
+{
+  if(!table) return FALSE;
+  // Convert root (screen-absolute) coords to culling-widget-local, matching
+  // the same conversion done in the scroll handler for e->x_root / e->y_root.
+  int ox = 0, oy = 0;
+  GdkWindow *win = gtk_widget_get_window(table->widget);
+  if(win) gdk_window_get_origin(win, &ox, &oy);
+  const float x_culling = x_root - ox;
+  const float y_culling = y_root - oy;
+  return _thumbs_zoom_add(table, zoom_delta, x_culling, y_culling, state, TRUE);
+}
+
+// Called when a zoom gesture ends (pinch END/CANCEL or scroll stop).
+// For each thumbnail that has a pending deferred reload, trigger the proper
+// surface reload at the current zoom level now that the gesture is done.
+void dt_culling_zoom_end(dt_culling_t *table)
+{
+  if(!table) return;
+  // We are finalising now, so cancel any pending safety-net timer.
+  if(table->zoom_finalize_timeout_id)
+  {
+    g_source_remove(table->zoom_finalize_timeout_id);
+    table->zoom_finalize_timeout_id = 0;
+  }
+  for(GList *l = table->list; l; l = g_list_next(l))
+  {
+    dt_thumbnail_t *th = l->data;
+    if(th->zoom_preview_pending)
+      dt_thumbnail_image_refresh_zoom(th);
+    // dt_thumbnail_image_refresh_zoom clears zoom_preview_pending
+  }
+}
+
+gboolean dt_culling_pan_move(dt_culling_t *table,
+                             const float dx,
+                             const float dy,
+                             const int state)
+{
+  if(!table) return FALSE;
+
+  const int max_in_memory_images = _get_max_in_memory_images();
+  if(table->mode == DT_CULLING_MODE_CULLING
+     && table->thumbs_count > max_in_memory_images)
+  {
+    return FALSE;
+  }
+
+  // check that at least one thumbnail is zoomed in
+  float fz = 1.0f;
+  for(GList *l = table->list; l; l = g_list_next(l))
+  {
+    const dt_thumbnail_t *th = l->data;
+    fz = fmaxf(fz, th->zoom);
+  }
+
+  if(fz <= 1.0f)
+  {
+    return FALSE;
+  }
+
+  const float scale = darktable.gui->ppd_thb / darktable.gui->ppd;
+  const float valx = dx * scale;
+  const float valy = dy * scale;
+
+  if(dt_modifier_is(state, GDK_SHIFT_MASK))
+  {
+    const dt_imgid_t mouseid = dt_control_get_mouse_over_id();
+    for(GList *l = table->list; l; l = g_list_next(l))
+    {
+      dt_thumbnail_t *th = l->data;
+      if(th->imgid == mouseid)
+      {
+        th->zoomx += valx;
+        th->zoomy += valy;
+        break;
+      }
+    }
+  }
+  else
+  {
+    for(GList *l = table->list; l; l = g_list_next(l))
+    {
+      dt_thumbnail_t *th = l->data;
+      th->zoomx += valx;
+      th->zoomy += valy;
+    }
+  }
+
+  // sanitize per-thumbnail pan bounds
+  for(GList *l = table->list; l; l = g_list_next(l))
+  {
+    dt_thumbnail_t *th = l->data;
+    int iw = 0, ih = 0;
+    gtk_widget_get_size_request(th->w_image, &iw, &ih);
+    // bound to the real rendered image extent (handles letterboxing), scaled to
+    // the current zoom in case the surface is still at the gesture-start zoom.
+    const float zr = (th->img_surf_zoom > 0.0f) ? th->zoom / th->img_surf_zoom : 1.0f;
+    const int mindx = (int)(iw * darktable.gui->ppd_thb - th->img_width * zr);
+    const int mindy = (int)(ih * darktable.gui->ppd_thb - th->img_height * zr);
+    if(th->zoomx > 0) th->zoomx = 0;
+    if(th->zoomx < mindx) th->zoomx = mindx;
+    if(th->zoomy > 0) th->zoomy = 0;
+    if(th->zoomy < mindy) th->zoomy = mindy;
+  }
+
+  for(GList *l = table->list; l; l = g_list_next(l))
+  {
+    dt_thumbnail_t *th = l->data;
+    dt_thumbnail_image_refresh_position(th);
+  }
+
+  return TRUE;
+}
+
 // change the type of overlays that should be shown
-void dt_culling_set_overlays_mode(dt_culling_t *table, dt_thumbnail_overlay_t over)
+void dt_culling_set_overlays_mode(dt_culling_t *table,
+                                  const dt_thumbnail_overlay_t over)
 {
   if(!table) return;
   gchar *txt = g_strdup_printf("plugins/lighttable/overlays/culling/%d", table->mode);
@@ -1981,7 +2427,8 @@ void dt_culling_set_overlays_mode(dt_culling_t *table, dt_thumbnail_overlay_t ov
 }
 
 // force the overlays to be shown
-void dt_culling_force_overlay(dt_culling_t *table, const gboolean force)
+void dt_culling_force_overlay(dt_culling_t *table,
+                              const gboolean force)
 {
   if(!table) return;
 

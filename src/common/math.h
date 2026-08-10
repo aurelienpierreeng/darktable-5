@@ -1,6 +1,6 @@
 /*
  *    This file is part of darktable,
- *    Copyright (C) 2018-2024 darktable developers.
+ *    Copyright (C) 2018-2025 darktable developers.
  *
  *    darktable is free software: you can redistribute it and/or modify
  *    it under the terms of the GNU General Public License as published by
@@ -25,6 +25,8 @@
 
 #define LUT_ELEM 512 // gamut LUT number of elements:
 
+#define DT_MEGA 1048576lu
+
 #define NORM_MIN 1.52587890625e-05f // norm can't be < to 2^(-16)
 
 // select speed vs accuracy tradeoff
@@ -47,7 +49,23 @@
 #define M_PI_F 3.14159265358979323846f
 #endif /* !M_PI_F */
 
-#define DT_M_LN2f (0.6931471805599453f)
+#ifndef M_LN2f
+#define M_LN2f 0.69314718055994530942f
+#endif
+
+#ifndef M_SQRT2_F
+#define M_SQRT2_F 1.41421356237309504880f
+#endif
+
+#define DT_2PI_F 6.28318530717958647693f
+
+#ifndef M_PI_2f
+#define M_PI_2f 1.57079632679489661923f
+#endif
+
+#ifndef M_PI_4f
+#define M_PI_4f 0.78539816339744830962f
+#endif
 
 // clip channel value to be between 0 and 1
 // NaN-safe: NaN compares false and will result in 0.0
@@ -139,31 +157,22 @@ static inline float Kahan_sum(const float m,
    return t2;
 }
 
-static inline float scharr_gradient(const float *p, const int w)
-{
-  const float gx = 47.0f / 255.0f * (p[-w-1] - p[-w+1] + p[w-1]  - p[w+1])
-                + 162.0f / 255.0f * (p[-1] - p[1]);
-  const float gy = 47.0f / 255.0f * (p[-w-1] - p[w-1]  + p[-w+1] - p[w+1])
-                + 162.0f / 255.0f * (p[-w] - p[w]);
-  return sqrtf(sqrf(gx) + sqrf(gy));
-}
-
 static inline float Log2(const float x)
 {
-  return (x > 0.0f) ? (logf(x) / DT_M_LN2f) : x;
+  return (x > 0.0f) ? (logf(x) / M_LN2f) : x;
 }
 
 static inline float Log2Thres(const float x,
                               const float Thres)
 {
-  return logf(x > Thres ? x : Thres) / DT_M_LN2f;
+  return logf(x > Thres ? x : Thres) / M_LN2f;
 }
 
 // ensure that any changes here are synchronized with data/kernels/extended.cl
 static inline float fastlog2(const float x)
 {
-  union { float f; uint32_t i; } vx = { x };
-  union { uint32_t i; float f; } mx = { (vx.i & 0x007FFFFF) | 0x3f000000 };
+  const union { float f; uint32_t i; } vx = { x };
+  const union { uint32_t i; float f; } mx = { (vx.i & 0x007FFFFF) | 0x3f000000 };
 
   float y = vx.i;
 
@@ -177,7 +186,7 @@ static inline float fastlog2(const float x)
 // ensure that any changes here are synchronized with data/kernels/extended.cl
 static inline float fastlog(const float x)
 {
-  return DT_M_LN2f * fastlog2(x);
+  return M_LN2f * fastlog2(x);
 }
 
 // multiply 3x3 matrix with 3x1 vector
@@ -283,7 +292,10 @@ static inline float sqf(const float x)
 {
   return x * x;
 }
-
+static inline float fcube(const float a)
+{
+  return (a * a * a);
+}
 
 DT_OMP_DECLARE_SIMD(aligned(p:16))
 static inline float median9f(const float *p)
@@ -294,8 +306,8 @@ static inline float median9f(const float *p)
   float p5 = MAX(p[4], p[5]);
   float p7 = MIN(p[7], p[8]);
   float p8 = MAX(p[7], p[8]);
-  float p0 = MIN(p[0], p1);
-  float p1a = MAX(p[0], p1);
+  const float p0 = MIN(p[0], p1);
+  const float p1a = MAX(p[0], p1);
   float p3 = MIN(p[3], p4);
   float p4a = MAX(p[3], p4);
   float p6 = MIN(p[6], p7);
@@ -364,13 +376,39 @@ union float_int {
   int k;
 };
 
+/* __FAST_MATH__ is defined via -ffast-math compiler option,
+  for darktable this is currently used for "Release" builds and in some
+  special parts of the code.
+  For these builds we accept some precision loss for performance and in
+  addition to compiler optimizing we allow some perf optimized inline functions
+  or macros.
+*/
+#ifdef __FAST_MATH__
+
 // a faster, vectorizable version of hypotf() when we know that there
-// won't be overflow, NaNs, or infinities
+// won't be overflow, NaNs or infinities. Looses some precision for very small inputs
 DT_OMP_DECLARE_SIMD()
-static inline float dt_fast_hypotf(const float x,
-                                   const float y)
+static inline float dt_fast_hypotf(const float x, const float y)
 {
   return sqrtf(x * x + y * y);
+}
+
+#else // __FAST_MATH__
+
+static inline float dt_fast_hypotf(const float x, const float y)
+{
+  return hypotf(x, y);
+}
+
+#endif // __FAST_MATH__
+
+static inline float scharr_gradient(const float *p, const int w)
+{
+  const float gx = 47.0f / 255.0f * (p[-w-1] - p[-w+1] + p[w-1]  - p[w+1])
+                + 162.0f / 255.0f * (p[-1] - p[1]);
+  const float gy = 47.0f / 255.0f * (p[-w-1] - p[w-1]  + p[-w+1] - p[w+1])
+                + 162.0f / 255.0f * (p[-w] - p[w]);
+  return dt_fast_hypotf(gx, gy);
 }
 
 // fast approximation of expf()
@@ -683,8 +721,8 @@ static inline void dt_vector_div1(dt_aligned_pixel_t result,
 
 static inline float dt_vector_channel_max(const dt_aligned_pixel_t pixel)
 {
-  dt_aligned_pixel_t swapRG = { pixel[1], pixel[0], pixel[2], pixel[3] };
-  dt_aligned_pixel_t swapRB = { pixel[2], pixel[1], pixel[0], pixel[3] };
+  const dt_aligned_pixel_t swapRG = { pixel[1], pixel[0], pixel[2], pixel[3] };
+  const dt_aligned_pixel_t swapRB = { pixel[2], pixel[1], pixel[0], pixel[3] };
   dt_aligned_pixel_t maximum;
   for_each_channel(c)
     maximum[c] = MAX(MAX(pixel[c], swapRG[c]), swapRB[c]);
@@ -747,6 +785,30 @@ static inline void dt_vector_sin(const dt_aligned_pixel_t arg,
     abs_scaled[c] = (scaled[c] < 0.0f) ? -scaled[c] : scaled[c];
   for_four_channels(c)
     sine[c] = scaled[c] * (p[c] * (abs_scaled[c] - one[c]) + one[c]);
+}
+
+// conversion factor, e.g.
+// dt_bauhaus_slider_set_factor(slider, RAD_2_DEG);
+static const double RAD_2_DEG = 180 / M_PI;
+
+static inline float deg2radf(const float deg)
+{
+  return deg * M_PI_F / 180.f;
+}
+
+static inline float rad2degf(const float radians)
+{
+  return radians / M_PI_F * 180.f;
+}
+
+static inline double deg2rad(const double deg)
+{
+  return deg * M_PI / 180.0;
+}
+
+static inline double rad2deg(const double radians)
+{
+  return radians / M_PI * 180.0;
 }
 
 // clang-format off

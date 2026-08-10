@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2011-2020 darktable developers.
+    Copyright (C) 2011-2025 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -18,6 +18,7 @@
 
 #include "common/darktable.h"
 #include "common/debug.h"
+#include "common/image_cache.h"
 #include "common/selection.h"
 #include "control/conf.h"
 #include "control/control.h"
@@ -47,7 +48,11 @@ const char *name(dt_lib_module_t *self)
 
 dt_view_type_flags_t views(dt_lib_module_t *self)
 {
-  return DT_VIEW_LIGHTTABLE | DT_VIEW_DARKROOM | DT_VIEW_TETHERING | DT_VIEW_MAP | DT_VIEW_PRINT;
+  return DT_VIEW_LIGHTTABLE
+    | DT_VIEW_DARKROOM
+    | DT_VIEW_TETHERING
+    | DT_VIEW_MAP
+    | DT_VIEW_PRINT;
 }
 
 uint32_t container(dt_lib_module_t *self)
@@ -55,9 +60,9 @@ uint32_t container(dt_lib_module_t *self)
   return DT_UI_CONTAINER_PANEL_BOTTOM;
 }
 
-int expandable(dt_lib_module_t *self)
+gboolean expandable(dt_lib_module_t *self)
 {
-  return 0;
+  return FALSE;
 }
 
 int position(const dt_lib_module_t *self)
@@ -65,7 +70,9 @@ int position(const dt_lib_module_t *self)
   return 1001;
 }
 
-static gboolean _lib_filmstrip_draw_callback(GtkWidget *widget, cairo_t *wcr, gpointer user_data)
+static gboolean _lib_filmstrip_draw_callback(GtkWidget *widget,
+                                             cairo_t *wcr,
+                                             gpointer user_data)
 {
   // we only ensure that the thumbtable is inside our container
   if(!gtk_bin_get_child(GTK_BIN(widget)))
@@ -79,16 +86,73 @@ static gboolean _lib_filmstrip_draw_callback(GtkWidget *widget, cairo_t *wcr, gp
   return FALSE;
 }
 
+static void _filmstrip_center(dt_action_t *action)
+{
+  if(!darktable.view_manager->active_images) return;
+  const int imgid = GPOINTER_TO_INT(darktable.view_manager->active_images->data);
+  dt_thumbtable_set_offset_image(dt_ui_thumbtable(darktable.gui->ui), imgid, TRUE);
+}
+
+static void _filmstrip_toggle_auto_scroll(dt_action_t *action)
+{
+  const gboolean current = dt_conf_get_bool("filmstrip/ui/auto_scroll");
+  dt_conf_set_bool("filmstrip/ui/auto_scroll", !current);
+  if(!current)
+  {
+    dt_toast_log(_("filmstrip auto-scroll enabled"));
+    _filmstrip_center(action);
+  }
+  else
+    dt_toast_log(_("filmstrip auto-scroll disabled"));
+}
+
+static void _filmstrip_pin_in_second_window(dt_action_t *action)
+{
+  if(dt_view_get_current() != DT_VIEW_DARKROOM) return;
+
+  dt_develop_t *dev = darktable.develop;
+  if(!dev) return;
+
+  // Use the hovered filmstrip image; fall back to the currently edited image
+  dt_imgid_t imgid = dt_control_get_mouse_over_id();
+  if(!dt_is_valid_imgid(imgid))
+    imgid = dev->image_storage.id;
+  if(!dt_is_valid_imgid(imgid)) return;
+
+  // Open the 2nd window if it is not already visible
+  if(!dev->second_wnd && dev->second_wnd_button)
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(dev->second_wnd_button), TRUE);
+
+  dt_dev_pin_image(dev, imgid);
+  const dt_image_t *img = dt_image_cache_get(imgid, 'r');
+  dt_toast_log(_("pinned in second window: %s"), img->filename);
+  dt_image_cache_read_release(img);
+}
+
 void gui_init(dt_lib_module_t *self)
 {
   /* creating container area */
   self->widget = gtk_event_box_new();
 
   /* connect callbacks */
-  g_signal_connect(G_OBJECT(self->widget), "draw", G_CALLBACK(_lib_filmstrip_draw_callback), self);
+  g_signal_connect(G_OBJECT(self->widget), "draw",
+                   G_CALLBACK(_lib_filmstrip_draw_callback), self);
 
   /* initialize view manager proxy */
   darktable.view_manager->proxy.filmstrip.module = self;
+
+
+  /* register action and attach it to self->widget so the quick-shortcut
+     button can discover it by hovering anywhere over the filmstrip */
+  dt_action_register(DT_ACTION(self), N_("pin in second window"),
+                     _filmstrip_pin_in_second_window, 0, 0);
+  dt_action_define(DT_ACTION(self), NULL, N_("pin in second window"),
+                   self->widget, NULL);
+
+  dt_action_register(DT_ACTION(self), N_("auto-scroll to selected image"),
+                     _filmstrip_toggle_auto_scroll, 0, 0);
+  dt_action_register(DT_ACTION(self), N_("center on selected image"),
+                     _filmstrip_center, 0, 0);
 }
 
 void gui_cleanup(dt_lib_module_t *self)

@@ -28,7 +28,7 @@
 #include "develop/imageop_math.h"
 #include "common/math.h"
 
-extern "C" {
+G_BEGIN_DECLS
 
 static inline float _clampnan(const float x, const float m, const float M)
 {
@@ -126,23 +126,15 @@ static inline float _xdivf(float d, int n)
 ////////////////////////////////////////////////////////////////
 
 
-void amaze_demosaic(dt_dev_pixelpipe_iop_t *piece,
-                    const float *const in,
+void amaze_demosaic(const float *const in,
                     float *out,
-                    const dt_iop_roi_t *const roi_in,
-                    const uint32_t filters)
+                    const int width,
+                    const int height,
+                    const uint32_t filters,
+                    const float clip_pt)
 {
-  const int width = roi_in->width;
-  const int height = roi_in->height;
-
-  const float clip_pt = dt_iop_get_processed_minimum(piece);
   const float clip_pt8 = 0.8f * clip_pt;
 
-// this allows to pass AMAZETS to the code. On some machines larger AMAZETS is faster
-// If AMAZETS is undefined it will be set to 160, which is the fastest on machines with 1GB cache per thread.
-#ifndef AMAZETS
-#define AMAZETS 160
-#endif
   // Tile size; the image is processed in square tiles to lower memory requirements and facilitate
   // multi-threading
   // We assure that Tile size is a multiple of 32 in the range [96;992]
@@ -1351,7 +1343,8 @@ void amaze_demosaic(dt_dev_pixelpipe_iop_t *piece,
 /*==================================================================================
  * end of raw therapee code
  *==================================================================================*/
-}
+
+G_END_DECLS
 
 // clang-format off
 // modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py

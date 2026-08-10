@@ -1,6 +1,6 @@
 /*
    This file is part of darktable,
-   Copyright (C) 2021-2024 darktable developers.
+   Copyright (C) 2021-2026 darktable developers.
 
    darktable is free software: you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -18,9 +18,6 @@
 
 #include "common/extra_optimizations.h"
 
-#ifdef HAVE_CONFIG_H
-#include "config.h"
-#endif
 #include "bauhaus/bauhaus.h"
 #include "common/bspline.h"
 #include "common/darktable.h"
@@ -129,7 +126,7 @@ const char *name()
 
 const char *aliases()
 {
-  return _("diffusion|deconvolution|blur|sharpening|bloom|clarity|dehaze|inpaint|watercolor");
+  return _("diffusion|deconvolution|blur|sharpening|bloom|clarity|dehaze|denoise|inpaint|watercolor");
 }
 
 const char **description(dt_iop_module_t *self)
@@ -137,9 +134,8 @@ const char **description(dt_iop_module_t *self)
   return dt_iop_set_description
     (self,
      _("simulate directional diffusion of light with heat transfer model\n"
-       "to apply an iterative edge-oriented blur,\n"
-       "inpaint damaged parts of the image, "
-       "or to remove blur with blind deconvolution."),
+       "to apply an iterative edge-oriented blur, inpaint damaged parts\n"
+       "of the image, or to remove blur with blind deconvolution"),
      _("corrective and creative"),
      _("linear, RGB, scene-referred"),
      _("linear, RGB"),
@@ -240,7 +236,7 @@ void init_presets(dt_iop_module_so_t *self)
 {
   // deblurring presets
 
-  dt_gui_presets_add_generic(_("lens deblur: soft"), self->op, self->version(),
+  dt_gui_presets_add_generic(_("lens deblur | soft"), self->op, self->version(),
                              &(dt_iop_diffuse_params_t)
                                { .iterations = 8,
                                  .radius_center = 0,
@@ -262,10 +258,10 @@ void init_presets(dt_iop_module_so_t *self)
 
                                  .threshold = 0.0f
                                },
-                             sizeof(dt_iop_diffuse_params_t), 1,
+                             sizeof(dt_iop_diffuse_params_t), TRUE,
                              DEVELOP_BLEND_CS_RGB_SCENE);
 
-  dt_gui_presets_add_generic(_("lens deblur: medium"), self->op, self->version(),
+  dt_gui_presets_add_generic(_("lens deblur | medium"), self->op, self->version(),
                              &(dt_iop_diffuse_params_t)
                                { .iterations = 16,
                                  .radius_center = 0,
@@ -287,10 +283,10 @@ void init_presets(dt_iop_module_so_t *self)
 
                                  .threshold = 0.0f
                                },
-                             sizeof(dt_iop_diffuse_params_t), 1,
+                             sizeof(dt_iop_diffuse_params_t), TRUE,
                              DEVELOP_BLEND_CS_RGB_SCENE);
 
-  dt_gui_presets_add_generic(_("lens deblur: hard"), self->op, self->version(),
+  dt_gui_presets_add_generic(_("lens deblur | hard"), self->op, self->version(),
                              &(dt_iop_diffuse_params_t)
                                { .iterations = 24,
                                  .radius_center = 0,
@@ -313,10 +309,10 @@ void init_presets(dt_iop_module_so_t *self)
                                  .threshold = 0.0f
                                },
 
-                             sizeof(dt_iop_diffuse_params_t), 1,
+                             sizeof(dt_iop_diffuse_params_t), TRUE,
                              DEVELOP_BLEND_CS_RGB_SCENE);
 
-  dt_gui_presets_add_generic(_("dehaze"), self->op, self->version(),
+  dt_gui_presets_add_generic(_("dehaze | default"), self->op, self->version(),
                              &(dt_iop_diffuse_params_t)
                                { .iterations = 10,
                                  .radius_center = 0,
@@ -339,10 +335,10 @@ void init_presets(dt_iop_module_so_t *self)
                                  .threshold = 0.0f
                                },
 
-                             sizeof(dt_iop_diffuse_params_t), 1,
+                             sizeof(dt_iop_diffuse_params_t), TRUE,
                              DEVELOP_BLEND_CS_RGB_SCENE);
 
-  dt_gui_presets_add_generic(_("dehaze: extra contrast"), self->op, self->version(),
+  dt_gui_presets_add_generic(_("dehaze | extra contrast"), self->op, self->version(),
                              &(dt_iop_diffuse_params_t)
                                { .iterations = 10,
                                  .radius_center = 0,
@@ -365,10 +361,10 @@ void init_presets(dt_iop_module_so_t *self)
                                  .threshold = 0.0f
                                },
 
-                             sizeof(dt_iop_diffuse_params_t), 1,
+                             sizeof(dt_iop_diffuse_params_t), TRUE,
                              DEVELOP_BLEND_CS_RGB_SCENE);
 
-  dt_gui_presets_add_generic(_("denoise: fine"), self->op, self->version(),
+  dt_gui_presets_add_generic(_("denoise | fine"), self->op, self->version(),
                              &(dt_iop_diffuse_params_t)
                                { .iterations = 32,
                                  .radius_center = 2,
@@ -390,10 +386,10 @@ void init_presets(dt_iop_module_so_t *self)
 
                                  .threshold = 0.0f
                                },
-                             sizeof(dt_iop_diffuse_params_t), 1,
+                             sizeof(dt_iop_diffuse_params_t), TRUE,
                              DEVELOP_BLEND_CS_RGB_SCENE);
 
-  dt_gui_presets_add_generic(_("denoise: medium"), self->op, self->version(),
+  dt_gui_presets_add_generic(_("denoise | medium"), self->op, self->version(),
                              &(dt_iop_diffuse_params_t)
                                { .iterations = 32,
                                  .radius_center = 4,
@@ -415,10 +411,10 @@ void init_presets(dt_iop_module_so_t *self)
 
                                  .threshold = 0.0f
                                },
-                             sizeof(dt_iop_diffuse_params_t), 1,
+                             sizeof(dt_iop_diffuse_params_t), TRUE,
                              DEVELOP_BLEND_CS_RGB_SCENE);
 
-  dt_gui_presets_add_generic(_("denoise: coarse"), self->op, self->version(),
+  dt_gui_presets_add_generic(_("denoise | coarse"), self->op, self->version(),
                              &(dt_iop_diffuse_params_t)
                                { .iterations = 32,
                                  .radius_center = 8,
@@ -440,7 +436,7 @@ void init_presets(dt_iop_module_so_t *self)
 
                                  .threshold = 0.0f
                                },
-                             sizeof(dt_iop_diffuse_params_t), 1,
+                             sizeof(dt_iop_diffuse_params_t), TRUE,
                              DEVELOP_BLEND_CS_RGB_SCENE);
 
   dt_gui_presets_add_generic(_("surface blur"), self->op, self->version(),
@@ -465,10 +461,10 @@ void init_presets(dt_iop_module_so_t *self)
 
                                  .threshold = 0.0f
                                },
-                             sizeof(dt_iop_diffuse_params_t), 1,
+                             sizeof(dt_iop_diffuse_params_t), TRUE,
                              DEVELOP_BLEND_CS_RGB_SCENE);
 
-  dt_gui_presets_add_generic(_("bloom"), self->op, self->version(),
+  dt_gui_presets_add_generic(_("artistic effects | bloom"), self->op, self->version(),
                              &(dt_iop_diffuse_params_t)
                                { .iterations = 1,
                                  .radius_center = 0,
@@ -490,10 +486,10 @@ void init_presets(dt_iop_module_so_t *self)
 
                                  .threshold = 0.0f
                                },
-                             sizeof(dt_iop_diffuse_params_t), 1,
+                             sizeof(dt_iop_diffuse_params_t), TRUE,
                              DEVELOP_BLEND_CS_RGB_SCENE);
 
-  dt_gui_presets_add_generic(_("sharpen demosaicing: no AA filter"), self->op,
+  dt_gui_presets_add_generic(_("sharpen demosaicing | no AA filter"), self->op,
                              self->version(),
                              &(dt_iop_diffuse_params_t)
                                { .iterations = 1,
@@ -516,10 +512,10 @@ void init_presets(dt_iop_module_so_t *self)
 
                                  .threshold = 0.0f
                                },
-                             sizeof(dt_iop_diffuse_params_t), 1,
+                             sizeof(dt_iop_diffuse_params_t), TRUE,
                              DEVELOP_BLEND_CS_RGB_SCENE);
 
-  dt_gui_presets_add_generic(_("sharpen demosaicing: AA filter"), self->op,
+  dt_gui_presets_add_generic(_("sharpen demosaicing | AA filter"), self->op,
                              self->version(),
                              &(dt_iop_diffuse_params_t)
                                { .iterations = 1,
@@ -543,10 +539,10 @@ void init_presets(dt_iop_module_so_t *self)
                                  .threshold = 0.0f
                                },
 
-                             sizeof(dt_iop_diffuse_params_t), 1,
+                             sizeof(dt_iop_diffuse_params_t), TRUE,
                              DEVELOP_BLEND_CS_RGB_SCENE);
 
-  dt_gui_presets_add_generic(_("simulate watercolor"), self->op, self->version(),
+  dt_gui_presets_add_generic(_("artistic effects | simulate watercolor"), self->op, self->version(),
                              &(dt_iop_diffuse_params_t)
                                { .iterations = 4,
                                  .radius_center = 0,
@@ -568,10 +564,10 @@ void init_presets(dt_iop_module_so_t *self)
 
                                  .threshold = 0.0f
                                },
-                             sizeof(dt_iop_diffuse_params_t), 1,
+                             sizeof(dt_iop_diffuse_params_t), TRUE,
                              DEVELOP_BLEND_CS_RGB_SCENE);
 
-  dt_gui_presets_add_generic(_("simulate line drawing"), self->op, self->version(),
+  dt_gui_presets_add_generic(_("artistic effects | simulate line drawing"), self->op, self->version(),
                              &(dt_iop_diffuse_params_t)
                                { .iterations = 50,
                                  .radius_center = 0,
@@ -593,12 +589,12 @@ void init_presets(dt_iop_module_so_t *self)
 
                                  .threshold = 0.0f
                                },
-                             sizeof(dt_iop_diffuse_params_t), 1,
+                             sizeof(dt_iop_diffuse_params_t), TRUE,
                              DEVELOP_BLEND_CS_RGB_SCENE);
 
   // local contrast
 
-  dt_gui_presets_add_generic(_("local contrast"), self->op, self->version(),
+  dt_gui_presets_add_generic(_("local contrast | normal"), self->op, self->version(),
                              &(dt_iop_diffuse_params_t)
                                { .iterations = 10,
                                  .radius_center = 512,
@@ -620,10 +616,10 @@ void init_presets(dt_iop_module_so_t *self)
 
                                  .threshold = 0.0f
                                },
-                             sizeof(dt_iop_diffuse_params_t), 1,
+                             sizeof(dt_iop_diffuse_params_t), TRUE,
                              DEVELOP_BLEND_CS_RGB_SCENE);
 
-  dt_gui_presets_add_generic(_("local contrast: fine"), self->op, self->version(),
+  dt_gui_presets_add_generic(_("local contrast | fine"), self->op, self->version(),
                              &(dt_iop_diffuse_params_t)
                                { .iterations = 5,
                                  .radius_center = 0,
@@ -645,7 +641,7 @@ void init_presets(dt_iop_module_so_t *self)
 
                                  .threshold = 0.0f
                                },
-                             sizeof(dt_iop_diffuse_params_t), 1,
+                             sizeof(dt_iop_diffuse_params_t), TRUE,
                              DEVELOP_BLEND_CS_RGB_SCENE);
 
   dt_gui_presets_add_generic(_("inpaint highlights"), self->op, self->version(),
@@ -670,12 +666,12 @@ void init_presets(dt_iop_module_so_t *self)
 
                                  .threshold = 1.41f,
                                },
-                             sizeof(dt_iop_diffuse_params_t), 1,
+                             sizeof(dt_iop_diffuse_params_t), TRUE,
                              DEVELOP_BLEND_CS_RGB_SCENE);
 
   // fast presets for slow hardware
 
-  dt_gui_presets_add_generic(_("sharpness: fast"), self->op, self->version(),
+  dt_gui_presets_add_generic(_("sharpness | fast"), self->op, self->version(),
                              &(dt_iop_diffuse_params_t)
                                { .iterations = 1,
                                  .radius_center = 0,
@@ -697,12 +693,12 @@ void init_presets(dt_iop_module_so_t *self)
 
                                  .threshold = 0.0f,
                                },
-                             sizeof(dt_iop_diffuse_params_t), 1,
+                             sizeof(dt_iop_diffuse_params_t), TRUE,
                              DEVELOP_BLEND_CS_RGB_SCENE);
 
   // two more sharpness (standard & strong)
 
-  dt_gui_presets_add_generic(_("sharpness"), self->op, self->version(),
+  dt_gui_presets_add_generic(_("sharpness | normal"), self->op, self->version(),
                              &(dt_iop_diffuse_params_t)
                                { .iterations = 3,
                                  .radius_center = 0,
@@ -724,10 +720,10 @@ void init_presets(dt_iop_module_so_t *self)
 
                                  .variance_threshold = 0.0f,
                                },
-                             sizeof(dt_iop_diffuse_params_t), 1,
+                             sizeof(dt_iop_diffuse_params_t), TRUE,
                              DEVELOP_BLEND_CS_RGB_SCENE);
 
-  dt_gui_presets_add_generic(_("sharpness: strong"), self->op, self->version(),
+  dt_gui_presets_add_generic(_("sharpness | strong"), self->op, self->version(),
                              &(dt_iop_diffuse_params_t)
                                { .iterations = 6,
                                  .radius_center = 0,
@@ -749,10 +745,10 @@ void init_presets(dt_iop_module_so_t *self)
 
                                  .threshold = 0.0f,
                                },
-                             sizeof(dt_iop_diffuse_params_t), 1,
+                             sizeof(dt_iop_diffuse_params_t), TRUE,
                              DEVELOP_BLEND_CS_RGB_SCENE);
 
-  dt_gui_presets_add_generic(_("local contrast: fast"), self->op, self->version(),
+  dt_gui_presets_add_generic(_("local contrast | fast"), self->op, self->version(),
                              &(dt_iop_diffuse_params_t)
                                { .iterations = 1,
                                  .radius_center = 512,
@@ -774,7 +770,7 @@ void init_presets(dt_iop_module_so_t *self)
 
                                  .threshold = 0.0f,
                                },
-                             sizeof(dt_iop_diffuse_params_t), 1,
+                             sizeof(dt_iop_diffuse_params_t), TRUE,
                              DEVELOP_BLEND_CS_RGB_SCENE);
 }
 
@@ -801,8 +797,7 @@ void tiling_callback(dt_iop_module_t *self,
   tiling->maxbuf_cl = 1.0f;
   tiling->overhead = 0;
   tiling->overlap = max_filter_radius;
-  tiling->xalign = 1;
-  tiling->yalign = 1;
+  tiling->align = 1;
   return;
 }
 
@@ -1349,7 +1344,7 @@ void process(dt_iop_module_t *self,
              const dt_iop_roi_t *const roi_in,
              const dt_iop_roi_t *const roi_out)
 {
-  const gboolean fastmode = piece->pipe->type & DT_DEV_PIXELPIPE_FAST;
+  const gboolean fastmode = dt_pipe_is_fast(piece->pipe);
 
   const dt_iop_diffuse_data_t *const data = piece->data;
 
@@ -1387,7 +1382,7 @@ void process(dt_iop_module_t *self,
   const float scale = fmaxf(piece->iscale / roi_in->scale, 1.f);
   const float final_radius = (data->radius + data->radius_center) * 2.f / scale;
 
-  const int iterations = MAX(ceilf((float)data->iterations), 1);
+  const int iterations = MAX(data->iterations, 1);
   const int diffusion_scales = num_steps_to_reach_equivalent_sigma(B_SPLINE_SIGMA, final_radius);
   const int scales = CLAMP(diffusion_scales, 1, MAX_NUM_SCALES);
 
@@ -1460,7 +1455,6 @@ static inline cl_int wavelets_process_cl(const int devid,
                                          cl_mem in,
                                          cl_mem reconstructed,
                                          cl_mem mask,
-                                         const size_t sizes[3],
                                          const int width,
                                          const int height,
                                          const dt_iop_diffuse_data_t *const data,
@@ -1529,24 +1523,21 @@ static inline cl_int wavelets_process_cl(const int devid,
     }
 
     // Compute wavelets low-frequency scales
-    dt_opencl_set_kernel_args(devid, gd->kernel_filmic_bspline_horizontal, 0,
+    err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_filmic_bspline_horizontal, width, height,
                               CLARG(buffer_in), CLARG(HF[s]),
                               CLARG(width), CLARG(height), CLARG(mult));
-    err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_filmic_bspline_horizontal, sizes);
     if(err != CL_SUCCESS) return err;
 
-    dt_opencl_set_kernel_args(devid, gd->kernel_filmic_bspline_vertical, 0,
+    err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_filmic_bspline_vertical, width, height,
                               CLARG(HF[s]), CLARG(buffer_out),
                               CLARG(width), CLARG(height), CLARG(mult));
-    err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_filmic_bspline_vertical, sizes);
     if(err != CL_SUCCESS) return err;
 
     // Compute wavelets high-frequency scales and backup the maximum
     // of texture over the RGB channels Note : HF = detail - LF
-    dt_opencl_set_kernel_args(devid, gd->kernel_filmic_wavelets_detail, 0,
+    err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_filmic_wavelets_detail, width, height,
                               CLARG(buffer_in), CLARG(buffer_out),
                               CLARG(HF[s]), CLARG(width), CLARG(height));
-    err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_filmic_wavelets_detail, sizes);
     if(err != CL_SUCCESS) return err;
 
     residual = buffer_out;
@@ -1593,7 +1584,7 @@ static inline cl_int wavelets_process_cl(const int devid,
     if(s == 0) buffer_out = reconstructed;
 
     // Compute wavelets low-frequency scales
-    dt_opencl_set_kernel_args(devid, gd->kernel_diffuse_pde, 0,
+    err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_diffuse_pde, width, height,
                               CLARG(HF[s]), CLARG(buffer_in), CLARG(mask),
                               CLARG(has_mask), CLARG(buffer_out),
                               CLARG(width), CLARG(height),
@@ -1601,7 +1592,6 @@ static inline cl_int wavelets_process_cl(const int devid,
                               CLARG(regularization), CLARG(variance_threshold),
                               CLARG(current_radius_square), CLARG(mult), CLARG(ABCD),
                               CLARG(strength));
-    err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_diffuse_pde, sizes);
     if(err != CL_SUCCESS) return err;
 
     count++;
@@ -1617,43 +1607,40 @@ int process_cl(dt_iop_module_t *self,
                const dt_iop_roi_t *const roi_in,
                const dt_iop_roi_t *const roi_out)
 {
-  const gboolean fastmode = piece->pipe->type & DT_DEV_PIXELPIPE_FAST;
+  const gboolean fastmode = dt_pipe_is_fast(piece->pipe);
 
   const dt_iop_diffuse_data_t *const data = piece->data;
   dt_iop_diffuse_global_data_t *const gd = self->global_data;
 
   gboolean out_of_memory = FALSE;
 
-  cl_int err = DT_OPENCL_DEFAULT_ERROR;
+  cl_int err = CL_SUCCESS;
 
   const int devid = piece->pipe->devid;
   const int width = roi_in->width;
   const int height = roi_in->height;
 
-  size_t origin[] = { 0, 0, 0 };
-  size_t region[] = { width, height, 1 };
+  const size_t region[2] = { width, height };
 
   // allow fast mode, just copy input to output
   if(fastmode)
-    return dt_opencl_enqueue_copy_image(devid, dev_in, dev_out, origin, origin, region);
-
-  size_t sizes[] = { ROUNDUPDWD(width, devid), ROUNDUPDHT(height, devid), 1 };
+    return dt_opencl_enqueue_copy_image(devid, dev_in, dev_out, CLIMG_ORIGIN, CLIMG_ORIGIN, region);
 
   cl_mem in = dev_in;
   cl_mem temp_in = NULL;
   cl_mem temp_out = NULL;
 
-  cl_mem temp1 = dt_opencl_alloc_device(devid, sizes[0], sizes[1], sizeof(float) * 4);
-  cl_mem temp2 = dt_opencl_alloc_device(devid, sizes[0], sizes[1], sizeof(float) * 4);
-  cl_mem mask = dt_opencl_alloc_device(devid, sizes[0], sizes[1], sizeof(uint8_t));
+  cl_mem temp1 = dt_opencl_alloc_device(devid, width, height, sizeof(float) * 4);
+  cl_mem temp2 = dt_opencl_alloc_device(devid, width, height, sizeof(float) * 4);
+  cl_mem mask = dt_opencl_alloc_device(devid, width, height, sizeof(uint8_t));
   // temp buffer for blurs. We will need to cycle between them for memory efficiency
-  cl_mem LF_even = dt_opencl_alloc_device(devid, sizes[0], sizes[1], sizeof(float) * 4);
-  cl_mem LF_odd = dt_opencl_alloc_device(devid, sizes[0], sizes[1], sizeof(float) * 4);
+  cl_mem LF_even = dt_opencl_alloc_device(devid, width, height, sizeof(float) * 4);
+  cl_mem LF_odd = dt_opencl_alloc_device(devid, width, height, sizeof(float) * 4);
 
   const float scale = fmaxf(piece->iscale / roi_in->scale, 1.f);
   const float final_radius = (data->radius + data->radius_center) * 2.f / scale;
 
-  const int iterations = MAX(ceilf((float)data->iterations), 1);
+  const int iterations = MAX(data->iterations, 1);
   const int diffusion_scales = num_steps_to_reach_equivalent_sigma(B_SPLINE_SIGMA, final_radius);
   const int scales = CLAMP(diffusion_scales, 1, MAX_NUM_SCALES);
 
@@ -1661,7 +1648,7 @@ int process_cl(dt_iop_module_t *self,
   cl_mem HF[MAX_NUM_SCALES];
   for(int s = 0; s < scales; s++)
   {
-    HF[s] = dt_opencl_alloc_device(devid, sizes[0], sizes[1], sizeof(float) * 4);
+    HF[s] = dt_opencl_alloc_device(devid, width, height, sizeof(float) * 4);
     if(!HF[s]) out_of_memory = TRUE;
   }
 
@@ -1669,7 +1656,7 @@ int process_cl(dt_iop_module_t *self,
   // because we use a lot of memory here.
   if(!temp1 || !temp2 || !LF_odd || !LF_even || !mask || out_of_memory)
   {
-    dt_opencl_enqueue_copy_image(devid, dev_in, dev_out, origin, origin, region);
+    dt_opencl_enqueue_copy_image(devid, dev_in, dev_out, CLIMG_ORIGIN, CLIMG_ORIGIN, region);
     err = CL_MEM_OBJECT_ALLOCATION_FAILURE;
     goto error;
   }
@@ -1678,23 +1665,22 @@ int process_cl(dt_iop_module_t *self,
   if(has_mask)
   {
     // build a boolean mask, TRUE where image is above threshold, FALSE otherwise
-    dt_opencl_set_kernel_args(devid, gd->kernel_diffuse_build_mask, 0,
+    err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_diffuse_build_mask, width, height,
                               CLARG(in), CLARG(mask), CLARG(data->threshold),
                               CLARG(roi_out->width), CLARG(roi_out->height));
-    err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_diffuse_build_mask, sizes);
     if(err != CL_SUCCESS) goto error;
 
     // init the inpainting area with noise
-    dt_opencl_set_kernel_args(devid, gd->kernel_diffuse_inpaint_mask, 0,
+    err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_diffuse_inpaint_mask, width, height,
                               CLARG(temp1), CLARG(in), CLARG(mask),
                               CLARG(roi_out->width), CLARG(roi_out->height));
-    err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_diffuse_inpaint_mask, sizes);
+
     if(err != CL_SUCCESS) goto error;
 
     in = temp1;
   }
 
-  for(int it = 0; it < iterations; it++)
+  for(int it = 0; it < iterations && err == CL_SUCCESS; it++)
   {
     if(it == 0)
     {
@@ -1714,9 +1700,12 @@ int process_cl(dt_iop_module_t *self,
 
     if(it == iterations - 1)
       temp_out = dev_out;
-    err = wavelets_process_cl(devid, temp_in, temp_out, mask, sizes,
+
+    err = wavelets_process_cl(devid, temp_in, temp_out, mask,
                               width, height, data, gd, final_radius,
                               scale, scales, has_mask, HF, LF_odd, LF_even);
+    if(err == CL_SUCCESS)
+      dt_opencl_finish(devid);
   }
 
 error:
@@ -1769,10 +1758,8 @@ void cleanup_global(dt_iop_module_so_t *self)
 void gui_init(dt_iop_module_t *self)
 {
   dt_iop_diffuse_gui_data_t *g = IOP_GUI_ALLOC(diffuse);
-  self->widget = gtk_box_new(GTK_ORIENTATION_VERTICAL, DT_BAUHAUS_SPACE);
 
-  gtk_box_pack_start(GTK_BOX(self->widget),
-                     dt_ui_section_label_new(C_("section", "properties")), FALSE, FALSE, 0);
+  self->widget = dt_gui_vbox(dt_ui_section_label_new(C_("section", "properties")));
 
   g->iterations = dt_bauhaus_slider_from_params(self, "iterations");
   dt_bauhaus_slider_set_soft_range(g->iterations, 1., 128);
@@ -1803,9 +1790,7 @@ void gui_init(dt_iop_module_t *self)
                    "if you plan on deblurring, \n"
                    "the radius should be around the width of your lens blur."));
 
-  GtkWidget *label_speed =
-    dt_ui_section_label_new(C_("section", "speed (sharpen ↔ diffuse)"));
-  gtk_box_pack_start(GTK_BOX(self->widget), label_speed, FALSE, FALSE, 0);
+  dt_gui_box_add(self->widget, dt_ui_section_label_new(C_("section", "speed (sharpen ↔ diffuse)")));
 
   g->first = dt_bauhaus_slider_from_params(self, "first");
   dt_bauhaus_slider_set_digits(g->first, 4);
@@ -1847,8 +1832,7 @@ void gui_init(dt_iop_module_t *self)
                   "positive values diffuse and blur, \n"
                   "zero does nothing."));
 
-  GtkWidget *label_direction = dt_ui_section_label_new(C_("section", "direction"));
-  gtk_box_pack_start(GTK_BOX(self->widget), label_direction, FALSE, FALSE, 0);
+  dt_gui_box_add(self->widget, dt_ui_section_label_new(C_("section", "direction")));
 
   g->anisotropy_first = dt_bauhaus_slider_from_params(self, "anisotropy_first");
   dt_bauhaus_slider_set_digits(g->anisotropy_first, 4);
@@ -1886,9 +1870,7 @@ void gui_init(dt_iop_module_t *self)
                             "positive values rather avoid edges (isophotes), \n"
                             "zero affects both equally (isotropic)."));
 
-  gtk_box_pack_start(GTK_BOX(self->widget),
-                     dt_ui_section_label_new(C_("section", "edge management")),
-                     FALSE, FALSE, 0);
+  dt_gui_box_add(self->widget, dt_ui_section_label_new(C_("section", "edge management")));
 
   g->sharpness = dt_bauhaus_slider_from_params(self, "sharpness");
   dt_bauhaus_slider_set_digits(g->sharpness, 3);
@@ -1915,9 +1897,7 @@ void gui_init(dt_iop_module_t *self)
        "increase if you see noise appear on smooth surfaces or\n"
        "if dark areas seem oversharpened compared to bright areas."));
 
-  gtk_box_pack_start(GTK_BOX(self->widget),
-                     dt_ui_section_label_new(C_("section", "diffusion spatiality")),
-                     FALSE, FALSE, 0);
+  dt_gui_box_add(self->widget, dt_ui_section_label_new(C_("section", "diffusion spatiality")));
 
   g->threshold = dt_bauhaus_slider_from_params(self, "threshold");
   dt_bauhaus_slider_set_format(g->threshold, "%");

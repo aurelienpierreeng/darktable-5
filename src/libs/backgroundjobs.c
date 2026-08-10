@@ -67,9 +67,9 @@ int position(const dt_lib_module_t *self)
   return 1;
 }
 
-int expandable(dt_lib_module_t *self)
+gboolean expandable(dt_lib_module_t *self)
 {
-  return 0;
+  return FALSE;
 }
 
 void gui_init(dt_lib_module_t *self)
@@ -134,12 +134,18 @@ static gboolean _added_gui_thread(gpointer user_data)
   gtk_widget_show_all(params->instance_widget);
   gtk_widget_show(params->self_widget);
 
-  GdkCursor *cursor = gdk_cursor_new_for_display(gdk_display_get_default(), GDK_LEFT_PTR);
-  gdk_window_set_cursor(gtk_widget_get_window(params->instance_widget), cursor);
-  g_object_unref(cursor);
+  // instance cursor to tell user that, if this is a blocking job with
+  // a global busy cursor, the cancel box in this widget can stop it
+  GdkWindow *window = gtk_widget_get_window(params->instance_widget);
+  if(window)
+  {
+    GdkCursor *cursor = gdk_cursor_new_from_name(gdk_display_get_default(), "default");
+    gdk_window_set_cursor(window, cursor);
+    g_object_unref(cursor);
+  }
 
   free(params);
-  return FALSE;
+  return G_SOURCE_REMOVE;
 }
 
 static void *_lib_backgroundjobs_added(dt_lib_module_t *self, gboolean has_progress_bar, const gchar *message)
@@ -208,7 +214,7 @@ static gboolean _destroyed_gui_thread(gpointer user_data)
   // free data
   free(params->instance);
   free(params);
-  return FALSE;
+  return G_SOURCE_REMOVE;
 }
 
 // remove the gui that is pointed to in instance
@@ -224,7 +230,7 @@ static void _lib_backgroundjobs_destroyed(dt_lib_module_t *self, dt_lib_backgrou
 static void _lib_backgroundjobs_cancel_callback_new(GtkWidget *w, gpointer user_data)
 {
   dt_progress_t *progress = (dt_progress_t *)user_data;
-  dt_control_progress_cancel(darktable.control, progress);
+  dt_control_progress_cancel(progress);
 }
 
 typedef struct _cancellable_gui_thread_t
@@ -244,7 +250,7 @@ static gboolean _cancellable_gui_thread(gpointer user_data)
   gtk_widget_show_all(button);
 
   free(params);
-  return FALSE;
+  return G_SOURCE_REMOVE;
 }
 
 static void _lib_backgroundjobs_cancellable(dt_lib_module_t *self, dt_lib_backgroundjob_element_t *instance,
@@ -274,7 +280,7 @@ static gboolean _update_gui_thread(gpointer user_data)
   gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(params->instance->progressbar), CLAMP(params->value, 0, 1.0));
 
   free(params);
-  return FALSE;
+  return G_SOURCE_REMOVE;
 }
 
 static void _lib_backgroundjobs_updated(dt_lib_module_t *self, dt_lib_backgroundjob_element_t *instance,
@@ -304,7 +310,7 @@ static gboolean _update_message_gui_thread(gpointer user_data)
 
   g_free(params->message);
   free(params);
-  return FALSE;
+  return G_SOURCE_REMOVE;
 }
 
 static void _lib_backgroundjobs_message_updated(dt_lib_module_t *self, dt_lib_backgroundjob_element_t *instance,

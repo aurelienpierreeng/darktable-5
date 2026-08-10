@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2020-2023 darktable developers.
+    Copyright (C) 2020-2025 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU Lesser General Public License as published by
@@ -19,15 +19,12 @@
 #ifndef DT_IOP_PROFILE_H
 #define DT_IOP_PROFILE_H
 
+#include "common/chromatic_adaptation.h"
 #include "common/colorspaces_inline_conversions.h"
 #include "common/colorspaces.h"
 #include "common/file_location.h"
 #include "common/dttypes.h"
 #include "develop/imageop.h"
-
-#ifdef HAVE_CONFIG_H
-#include "config.h"
-#endif
 
 #ifdef HAVE_OPENCL
 #include <CL/cl.h>           // for cl_mem
@@ -87,10 +84,10 @@ dt_ioppr_add_profile_info_to_list(struct dt_develop_t *dev,
  * work profile must not be cleanup()
  */
 dt_iop_order_iccprofile_info_t *
-dt_ioppr_get_iop_work_profile_info(struct dt_iop_module_t *module,
+dt_ioppr_get_iop_work_profile_info(const struct dt_iop_module_t *module,
                                    GList *iop_list);
 dt_iop_order_iccprofile_info_t *
-dt_ioppr_get_iop_input_profile_info(struct dt_iop_module_t *module,
+dt_ioppr_get_iop_input_profile_info(const struct dt_iop_module_t *module,
                                     GList *iop_list);
 
 /** set the work profile (type, filename) on the pipe, should be called on process*()
@@ -118,6 +115,15 @@ dt_ioppr_set_pipe_output_profile_info(struct dt_develop_t *dev,
                                       const char *filename,
                                       const int intent);
 
+/** Record the export profile, used as a cache-identity tag. Returns the (possibly NULL)
+   interned profile-info pointer, no fallback for sRGB in case of failure. */
+dt_iop_order_iccprofile_info_t *
+dt_ioppr_set_pipe_export_profile_info(struct dt_develop_t *dev,
+                                      struct dt_dev_pixelpipe_t *pipe,
+                                      const dt_colorspaces_color_profile_type_t type,
+                                      const char *filename,
+                                      const int intent);
+
 /** returns a reference to the histogram profile info
  * histogram profile must not be cleanup()
  */
@@ -126,16 +132,16 @@ dt_ioppr_get_histogram_profile_info(struct dt_develop_t *dev);
 
 /** returns the active work/input/output profile on the pipe */
 dt_iop_order_iccprofile_info_t *
-dt_ioppr_get_pipe_work_profile_info(struct dt_dev_pixelpipe_t *pipe);
+dt_ioppr_get_pipe_work_profile_info(const struct dt_dev_pixelpipe_t *pipe);
 dt_iop_order_iccprofile_info_t *
-dt_ioppr_get_pipe_input_profile_info(struct dt_dev_pixelpipe_t *pipe);
+dt_ioppr_get_pipe_input_profile_info(const struct dt_dev_pixelpipe_t *pipe);
 dt_iop_order_iccprofile_info_t *
-dt_ioppr_get_pipe_output_profile_info(struct dt_dev_pixelpipe_t *pipe);
+dt_ioppr_get_pipe_output_profile_info(const struct dt_dev_pixelpipe_t *pipe);
 
 /** Get the relevant RGB -> XYZ profile at the position of current module */
 dt_iop_order_iccprofile_info_t *
-dt_ioppr_get_pipe_current_profile_info(struct dt_iop_module_t *module,
-                                       struct dt_dev_pixelpipe_t *pipe);
+dt_ioppr_get_pipe_current_profile_info(const struct dt_iop_module_t *module,
+                                       const struct dt_dev_pixelpipe_t *pipe);
 
 /** returns the current setting of the work profile on colorin iop */
 void dt_ioppr_get_work_profile_type(struct dt_develop_t *dev,
@@ -165,9 +171,9 @@ void dt_ioppr_transform_image_colorspace
    float *const image_out,
    const int width,
    const int height,
-   const int cst_from,
-   const int cst_to,
-   int *converted_cst,
+   const dt_iop_colorspace_type_t cst_from,
+   const dt_iop_colorspace_type_t cst_to,
+   dt_iop_colorspace_type_t *converted_cst,
    const dt_iop_order_iccprofile_info_t *const profile_info);
 
 void dt_ioppr_transform_image_colorspace_rgb
@@ -185,6 +191,7 @@ typedef struct dt_colorspaces_cl_global_t
   int kernel_colorspaces_transform_lab_to_rgb_matrix;
   int kernel_colorspaces_transform_rgb_matrix_to_lab;
   int kernel_colorspaces_transform_rgb_matrix_to_rgb;
+  int kernel_colorspaces_gamma;
 } dt_colorspaces_cl_global_t;
 
 // must be in synch with colorspaces.cl dt_colorspaces_iccprofile_info_cl_t
@@ -224,9 +231,9 @@ gboolean dt_ioppr_transform_image_colorspace_cl
    cl_mem dev_img_out,
    const int width,
    const int height,
-   const int cst_from,
-   const int cst_to,
-   int *converted_cst,
+   const dt_iop_colorspace_type_t cst_from,
+   const dt_iop_colorspace_type_t cst_to,
+   dt_iop_colorspace_type_t *converted_cst,
    const dt_iop_order_iccprofile_info_t *const profile_info);
 
 gboolean dt_ioppr_transform_image_colorspace_rgb_cl
@@ -403,6 +410,22 @@ static inline void dt_ioppr_rgb_matrix_to_lab(const dt_aligned_pixel_t rgb,
   dt_ioppr_rgb_matrix_to_xyz(rgb, xyz, matrix_in_transposed, lut_in,
                              unbounded_coeffs_in, lutsize, nonlinearlut);
   dt_XYZ_to_Lab(xyz, lab);
+}
+
+// Convert a pixel from the pipe's working RGB space to darktable UCS JCH.
+// Takes the pre-transposed working-space → XYZ D50 matrix (available as
+// work_profile->matrix_in_transposed) and L_white (from Y_to_dt_UCS_L_star(1.f)).
+// Assumes input is already clipped to non-negative values.
+static inline void dt_ioppr_rgb_matrix_to_dt_UCS_JCH(const float *const in,
+                                                     dt_aligned_pixel_t jch,
+                                                     const dt_colormatrix_t matrix_in_transposed,
+                                                     const float L_white)
+{
+  dt_aligned_pixel_t xyz_d50, xyz_d65, xyY;
+  dt_apply_transposed_color_matrix(in, matrix_in_transposed, xyz_d50);
+  XYZ_D50_to_D65(xyz_d50, xyz_d65);
+  dt_D65_XYZ_to_xyY(xyz_d65, xyY);
+  xyY_to_dt_UCS_JCH(xyY, L_white, jch);
 }
 
 static inline float dt_ioppr_get_profile_info_middle_grey

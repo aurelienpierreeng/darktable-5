@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2013-2024 darktable developers.
+    Copyright (C) 2013-2026 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -15,9 +15,7 @@
     You should have received a copy of the GNU General Public License
     along with darktable.  If not, see <http://www.gnu.org/licenses/>.
 */
-#ifdef HAVE_CONFIG_H
-#include "config.h"
-#endif
+
 #include "bauhaus/bauhaus.h"
 #include "common/bilateral.h"
 #include "common/bilateralcl.h"
@@ -149,7 +147,8 @@ const char *name()
 
 const char **description(dt_iop_module_t *self)
 {
-  return dt_iop_set_description(self, _("transfer a color palette and tonal repartition from one image to another"),
+  return dt_iop_set_description(self, _("transfer a color palette and tonal repartition\n"
+                                        "from one image to another"),
                                       _("creative"),
                                       _("linear or non-linear, Lab, display-referred"),
                                       _("non-linear, Lab"),
@@ -449,7 +448,7 @@ void process(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *c
   const float sigma_r = 8.0f; // does not depend on scale
 
   // save a copy of preview input buffer so we can get histogram and color statistics out of it
-  if(self->dev->gui_attached && g && (piece->pipe->type & DT_DEV_PIXELPIPE_PREVIEW) && (data->flag & ACQUIRE))
+  if(self->dev->gui_attached && g && dt_pipe_is_preview(piece->pipe) && (data->flag & ACQUIRE))
   {
     dt_iop_gui_enter_critical_section(self);
     if(g->buffer) dt_free_align(g->buffer);
@@ -595,7 +594,7 @@ int process_cl(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_mem dev_
 
 
   // save a copy of preview input buffer so we can get histogram and color statistics out of it
-  if(self->dev->gui_attached && g && (piece->pipe->type & DT_DEV_PIXELPIPE_PREVIEW) && (data->flag & ACQUIRE))
+  if(self->dev->gui_attached && g && dt_pipe_is_preview(piece->pipe) && (data->flag & ACQUIRE))
   {
     dt_iop_gui_enter_critical_section(self);
     dt_free_align(g->buffer);
@@ -606,7 +605,7 @@ int process_cl(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_mem dev_
     g->ch = ch;
 
     if(g->buffer)
-      err = dt_opencl_copy_device_to_host(devid, g->buffer, dev_in, width, height, ch * sizeof(float));
+      err = dt_opencl_copy_image_to_host(devid, g->buffer, dev_in, width, height, ch * sizeof(float));
 
     dt_iop_gui_leave_critical_section(self);
 
@@ -676,9 +675,8 @@ int process_cl(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_mem dev_
     }
     else
     {
-      size_t origin[] = { 0, 0, 0 };
-      size_t region[] = { width, height, 1 };
-      err = dt_opencl_enqueue_copy_image(devid, dev_out, dev_tmp, origin, origin, region);
+      const size_t region[2] = { width, height };
+      err = dt_opencl_enqueue_copy_image(devid, dev_out, dev_tmp, CLIMG_ORIGIN, CLIMG_ORIGIN, region);
       if(err != CL_SUCCESS) goto error;
     }
 
@@ -688,9 +686,8 @@ int process_cl(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_mem dev_
   }
   else
   {
-    size_t origin[] = { 0, 0, 0 };
-    size_t region[] = { width, height, 1 };
-    err = dt_opencl_enqueue_copy_image(devid, dev_in, dev_out, origin, origin, region);
+    const size_t region[2] = { width, height };
+    err = dt_opencl_enqueue_copy_image(devid, dev_in, dev_out, CLIMG_ORIGIN, CLIMG_ORIGIN, region);
   }
 
 error:
@@ -726,8 +723,7 @@ void tiling_callback(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
       = fmaxf(1.0f, (float)dt_bilateral_singlebuffer_size(width, height, sigma_s, sigma_r) / basebuffer);
   tiling->overhead = 0;
   tiling->overlap = ceilf(4 * sigma_s);
-  tiling->xalign = 1;
-  tiling->yalign = 1;
+  tiling->align = 1;
 }
 
 void commit_params(dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pixelpipe_t *pipe,
@@ -767,7 +763,7 @@ void gui_changed(dt_iop_module_t *self, GtkWidget *w, void *previous)
 
 static void acquire_source_button_pressed(GtkButton *button, dt_iop_module_t *self)
 {
-  if(darktable.gui->reset) return;
+  DT_GUARD_GUI_UPDATE();
   dt_iop_colormapping_params_t *p = self->params;
   p->flag |= ACQUIRE;
   p->flag |= GET_SOURCE;
@@ -778,7 +774,7 @@ static void acquire_source_button_pressed(GtkButton *button, dt_iop_module_t *se
 
 static void acquire_target_button_pressed(GtkButton *button, dt_iop_module_t *self)
 {
-  if(darktable.gui->reset) return;
+  DT_GUARD_GUI_UPDATE();
   dt_iop_colormapping_params_t *p = self->params;
   p->flag |= ACQUIRE;
   p->flag |= GET_TARGET;
@@ -906,7 +902,7 @@ static void process_clusters(gpointer instance, dt_iop_module_t *self)
   if(!g || !g->buffer) return;
   if(!(p->flag & ACQUIRE)) return;
 
-  ++darktable.gui->reset;
+  DT_ENTER_GUI_UPDATE();
 
   dt_iop_gui_enter_critical_section(self);
   const int width = g->width;
@@ -916,6 +912,7 @@ static void process_clusters(gpointer instance, dt_iop_module_t *self)
   if(!buffer)
   {
     dt_iop_gui_leave_critical_section(self);
+    DT_LEAVE_GUI_UPDATE();
     return;
   }
   dt_iop_image_copy_by_size(buffer, g->buffer, width, height, ch);
@@ -973,7 +970,7 @@ static void process_clusters(gpointer instance, dt_iop_module_t *self)
   }
 
   p->flag &= ~(GET_TARGET | GET_SOURCE | ACQUIRE);
-  --darktable.gui->reset;
+  DT_LEAVE_GUI_UPDATE();
 
   if(p->flag & HAS_SOURCE) dt_dev_add_history_item(darktable.develop, self, TRUE);
 
@@ -992,22 +989,13 @@ void gui_init(dt_iop_module_t *self)
   g->xform = cmsCreateTransform(hLab, TYPE_Lab_DBL, hsRGB, TYPE_RGB_DBL, INTENT_PERCEPTUAL, 0);
   g->buffer = NULL;
 
-  self->widget = GTK_WIDGET(gtk_box_new(GTK_ORIENTATION_VERTICAL, DT_BAUHAUS_SPACE));
-
-  gtk_box_pack_start(GTK_BOX(self->widget), dt_ui_label_new(_("source clusters:")), TRUE, TRUE, 0);
-
   g->source_area = dtgtk_drawing_area_new_with_aspect_ratio(1.0 / 3.0);
-  gtk_box_pack_start(GTK_BOX(self->widget), g->source_area, TRUE, TRUE, 0);
   g_signal_connect(G_OBJECT(g->source_area), "draw", G_CALLBACK(cluster_preview_draw), self);
 
-  gtk_box_pack_start(GTK_BOX(self->widget), dt_ui_label_new(_("target clusters:")), TRUE, TRUE, 0);
-
   g->target_area = dtgtk_drawing_area_new_with_aspect_ratio(1.0 / 3.0);
-  gtk_box_pack_start(GTK_BOX(self->widget), g->target_area, TRUE, TRUE, 0);
   g_signal_connect(G_OBJECT(g->target_area), "draw", G_CALLBACK(cluster_preview_draw), self);
 
   GtkWidget *box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 5);
-  gtk_box_pack_start(GTK_BOX(self->widget), box, TRUE, TRUE, 0);
 
   g->acquire_source_button = dt_iop_button_new(self, N_("acquire as source"),
                                                G_CALLBACK(acquire_source_button_pressed), FALSE, 0, 0,
@@ -1020,6 +1008,9 @@ void gui_init(dt_iop_module_t *self)
                                                NULL, 0, box);
   gtk_label_set_ellipsize(GTK_LABEL(gtk_bin_get_child(GTK_BIN(g->acquire_target_button))), PANGO_ELLIPSIZE_START);
   gtk_widget_set_tooltip_text(g->acquire_target_button, _("analyze this image as a target image"));
+
+  self->widget = dt_gui_vbox(dt_ui_label_new(_("source clusters:")), g->source_area,
+                             dt_ui_label_new(_("target clusters:")), g->target_area, box);
 
   g->clusters = dt_bauhaus_slider_from_params(self, "n");
   gtk_widget_set_tooltip_text(g->clusters, _("number of clusters to find in image. value change resets all clusters"));
@@ -1034,7 +1025,7 @@ void gui_init(dt_iop_module_t *self)
   dt_bauhaus_slider_set_format(g->equalization, "%");
 
   /* add signal handler for preview pipe finished: process clusters if requested */
-  DT_CONTROL_SIGNAL_CONNECT(DT_SIGNAL_DEVELOP_PREVIEW_PIPE_FINISHED, process_clusters, self);
+  DT_CONTROL_SIGNAL_HANDLE(DT_SIGNAL_DEVELOP_PREVIEW_PIPE_FINISHED, process_clusters);
 
   FILE *f = g_fopen("/tmp/dt_colormapping_loaded", "rb");
   if(f)
@@ -1048,12 +1039,8 @@ void gui_cleanup(dt_iop_module_t *self)
 {
   dt_iop_colormapping_gui_data_t *g = self->gui_data;
 
-  DT_CONTROL_SIGNAL_DISCONNECT(process_clusters, self);
-
   cmsDeleteTransform(g->xform);
   dt_free_align(g->buffer);
-
-  IOP_GUI_FREE;
 }
 
 // clang-format off

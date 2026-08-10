@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2012-2024 darktable developers.
+    Copyright (C) 2012-2026 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -16,9 +16,6 @@
     along with darktable.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-#ifdef HAVE_CONFIG_H
-#include "config.h"
-#endif
 #include "bauhaus/bauhaus.h"
 #include "common/eaw.h"
 #include "common/exif.h"
@@ -46,6 +43,7 @@
 
 // which version of the non-local means code should be used?  0=old
 // (this file), 1=new (src/common/nlmeans_core.c)
+// new mode seems to have a perf penalty of 30% without quality improvements as observed in astrophoto denoise
 #define USE_NEW_IMPL_CL 0
 
 #define REDUCESIZE 64
@@ -95,7 +93,7 @@ typedef enum dt_iop_denoiseprofile_channel_t
 
 // this is the version of the modules parameters,
 // and includes version information about compile-time dt
-DT_MODULE_INTROSPECTION(11, dt_iop_denoiseprofile_params_t)
+DT_MODULE_INTROSPECTION(12, dt_iop_denoiseprofile_params_t)
 
 typedef struct dt_iop_denoiseprofile_params_t
 {
@@ -126,11 +124,13 @@ typedef struct dt_iop_denoiseprofile_params_t
   gboolean use_new_vst; // $DEFAULT: TRUE $DESCRIPTION: "upgrade profiled transform" backward compatibility options
   dt_iop_denoiseprofile_wavelet_mode_t wavelet_color_mode; /* switch between RGB and Y0U0V0 modes.
                                                               $DEFAULT: MODE_Y0U0V0 $DESCRIPTION: "color mode"*/
+  gboolean compensate_hilite_pres; // $DEFAULT: TRUE $DESCRIPTION: "compensate highlight preservation"
 } dt_iop_denoiseprofile_params_t;
 
 typedef struct dt_iop_denoiseprofile_gui_data_t
 {
   GtkWidget *profile;
+  GtkWidget *compensate_hilite_pres;
   GtkWidget *mode;
   GtkWidget *radius;
   GtkWidget *nbhood;
@@ -214,7 +214,12 @@ typedef struct dt_iop_denoiseprofile_global_data_t
   int kernel_denoiseprofile_reduce_second;
 } dt_iop_denoiseprofile_global_data_t;
 
-static dt_noiseprofile_t dt_iop_denoiseprofile_get_auto_profile(dt_iop_module_t *self);
+static dt_noiseprofile_t dt_iop_denoiseprofile_get_auto_profile(dt_iop_module_t *self,
+                                                                GList *profiles,
+                                                                char *name,
+                                                                const size_t namelen,
+                                                                gboolean *autodetected,
+                                                                const gboolean compensate_hilite_pres);
 
 static void debug_dump_PFM(const dt_dev_pixelpipe_iop_t *const piece,
                            const char *const namespec,
@@ -224,7 +229,7 @@ static void debug_dump_PFM(const dt_dev_pixelpipe_iop_t *const piece,
                            const int scale)
 {
   if(!darktable.dump_pfm_module) return;
-  if((piece->pipe->type & DT_DEV_PIXELPIPE_FULL) == 0) return;
+  if(!dt_pipe_is_full(piece->pipe)) return;
 
   char name[256];
   snprintf(name, sizeof(name), namespec, scale);
@@ -408,7 +413,7 @@ int legacy_params_to11(dt_iop_module_t *self,
       // used or not
       return 0;
     }
-    dt_noiseprofile_t interpolated = dt_iop_denoiseprofile_get_auto_profile(self);
+    dt_noiseprofile_t interpolated = dt_iop_denoiseprofile_get_auto_profile(self, NULL, NULL, 0, NULL, FALSE);
     // if the profile in old_version is an autodetected one (this
     // would mean a+b params match the interpolated one, AND the
     // profile is actually the first selected one - however we can
@@ -709,6 +714,27 @@ int legacy_params(dt_iop_module_t *self,
     dt_iop_denoiseprofile_wavelet_mode_t wavelet_color_mode;
   } dt_iop_denoiseprofile_params_v11_t;
 
+  typedef struct dt_iop_denoiseprofile_params_v12_t
+  {
+    float radius;
+    float nbhood;
+    float strength;
+    float shadows;
+    float bias;
+    float scattering;
+    float central_pixel_weight;
+    float overshooting;
+    float a[3], b[3];
+    dt_iop_denoiseprofile_mode_t mode;
+    float x[DT_DENOISE_PROFILE_NONE][DT_IOP_DENOISE_PROFILE_BANDS];
+    float y[DT_DENOISE_PROFILE_NONE][DT_IOP_DENOISE_PROFILE_BANDS];
+    gboolean wb_adaptive_anscombe;
+    gboolean fix_anscombe_and_nlmeans_norm;
+    gboolean use_new_vst;
+    dt_iop_denoiseprofile_wavelet_mode_t wavelet_color_mode;
+    gboolean compensate_hilite_pres;
+  } dt_iop_denoiseprofile_params_v12_t;
+
   if(old_version < 11)
   {
     *new_params = (dt_iop_denoiseprofile_params_v11_t *)
@@ -723,6 +749,21 @@ int legacy_params(dt_iop_module_t *self,
     *new_params_size = sizeof(dt_iop_denoiseprofile_params_v11_t);
     *new_version = 11;
     return ret;
+  }
+  if(old_version == 11)
+  {
+    const dt_iop_denoiseprofile_params_v11_t *o = (dt_iop_denoiseprofile_params_v11_t *)old_params;
+    dt_iop_denoiseprofile_params_v12_t *n = malloc(sizeof(dt_iop_denoiseprofile_params_v12_t));
+
+    // layout is the same except for the addition of a new field
+    memset(n, 0, sizeof(dt_iop_denoiseprofile_params_v12_t));
+    memcpy(n, o, sizeof(dt_iop_denoiseprofile_params_v11_t));
+    n->compensate_hilite_pres = FALSE;
+
+    *new_params = n;
+    *new_params_size = sizeof(dt_iop_denoiseprofile_params_v12_t);
+    *new_version = 12;
+    return 0;
   }
 
   return 1;
@@ -752,6 +793,7 @@ void init_presets(dt_iop_module_so_t *self)
   p.a[0] = -1.0f; // autodetect profile
   p.central_pixel_weight = 0.1f;
   p.overshooting = 1.0f;
+  p.compensate_hilite_pres = FALSE;
   p.fix_anscombe_and_nlmeans_norm = TRUE;
   for(int b = 0; b < DT_IOP_DENOISE_PROFILE_BANDS; b++)
   {
@@ -763,8 +805,8 @@ void init_presets(dt_iop_module_so_t *self)
     p.x[DT_DENOISE_PROFILE_Y0][b] = b / (DT_IOP_DENOISE_PROFILE_BANDS - 1.0f);
     p.y[DT_DENOISE_PROFILE_Y0][b] = 0.0f;
   }
-  dt_gui_presets_add_generic(_("wavelets: chroma only"), self->op, 11, &p,
-                             sizeof(p), 1, DEVELOP_BLEND_CS_RGB_SCENE);
+  dt_gui_presets_add_generic(_("wavelets: chroma only"), self->op, 12, &p,
+                             sizeof(p), TRUE, DEVELOP_BLEND_CS_RGB_SCENE);
 }
 
 const char *name()
@@ -813,6 +855,8 @@ void tiling_callback(dt_iop_module_t *self,
 {
   dt_iop_denoiseprofile_params_t *d = piece->data;
 
+  tiling->align = 1;
+  tiling->overhead = 0;
   if(d->mode == MODE_NLMEANS || d->mode == MODE_NLMEANS_AUTO)
   {
     // pixel filter size:
@@ -827,10 +871,7 @@ void tiling_callback(dt_iop_module_t *self,
     // in + out + (2 + NUM_BUCKETS * 0.25) tmp:
     tiling->factor_cl = 4.0f + 0.25f * NUM_BUCKETS;
     tiling->maxbuf = 1.0f;
-    tiling->overhead = 0;
     tiling->overlap = P + K_scattered;
-    tiling->xalign = 1;
-    tiling->yalign = 1;
   }
   else
   {
@@ -862,12 +903,8 @@ void tiling_callback(dt_iop_module_t *self,
     tiling->factor_cl = 3.5f + max_scale; // in + out + tmp + reducebuffer + scale buffers
     tiling->maxbuf = 1.0f;
     tiling->maxbuf_cl = 1.0f;
-    tiling->overhead = 0;
     tiling->overlap = max_filter_radius;
-    tiling->xalign = 1;
-    tiling->yalign = 1;
   }
-
 }
 
 static inline void precondition(const float *const in,
@@ -1602,18 +1639,16 @@ static float nlmeans_scattering(int *nbhood,
   int K = *nbhood;
   float scattering = d->scattering;
 
-  if(piece->pipe->type
-     & (DT_DEV_PIXELPIPE_PREVIEW | DT_DEV_PIXELPIPE_PREVIEW2 | DT_DEV_PIXELPIPE_THUMBNAIL))
+  const int maxk = (K * K * K + 7.0 * K * sqrt(K)) * scattering / 6.0 + K;
+  if(dt_pipe_is_fast(piece->pipe) || dt_pipe_is_preview(piece->pipe) || dt_pipe_is_thumb(piece->pipe))
   {
-    // much faster slightly more inaccurate preview
-    const int maxk = (K * K * K + 7.0 * K * sqrt(K)) * scattering / 6.0 + K;
+    // much faster but inaccurate for previews
     K = MIN(3, K);
     scattering = (maxk - K) * 6.0 / (K * K * K + 7.0 * K * sqrt(K));
   }
-  if(piece->pipe->type & DT_DEV_PIXELPIPE_FULL)
+  else if(dt_pipe_is_canvas(piece->pipe) && !darktable.develop->late_scaling.enabled)
   {
-    // much faster slightly more inaccurate preview
-    const int maxk = (K * K * K + 7.0 * K * sqrt(K)) * scattering / 6.0 + K;
+    // faster but slightly more inaccurate
     K = MAX(MIN(4, K), K * scale);
     scattering = (maxk - K) * 6.0 / (K * K * K + 7.0 * K * sqrt(K));
   }
@@ -1638,9 +1673,9 @@ static float nlmeans_precondition(const dt_iop_denoiseprofile_data_t *const d,
   compute_wb_factors(wb,d,piece,wb_weights);
 
   // adaptive p depending on white balance
-  p[0] = MAX(d->shadows + 0.1 * logf(scale / wb[0]), 0.0f);
-  p[1] = MAX(d->shadows + 0.1 * logf(scale / wb[1]), 0.0f);
-  p[2] = MAX(d->shadows + 0.1 * logf(scale / wb[2]), 0.0f);
+  p[0] = MAX(d->shadows + 0.1f * logf(scale / wb[0]), 0.0f);
+  p[1] = MAX(d->shadows + 0.1f * logf(scale / wb[1]), 0.0f);
+  p[2] = MAX(d->shadows + 0.1f * logf(scale / wb[2]), 0.0f);
   p[3] = 0.0f;
 
   // update the coeffs with strength and scale
@@ -1681,9 +1716,9 @@ static float nlmeans_precondition_cl(const dt_iop_denoiseprofile_data_t *const d
   wb[3] = 0.0;
 
   // adaptive p depending on white balance
-  p[0] = MAX(d->shadows + 0.1 * logf(scale / wb[0]), 0.0f);
-  p[1] = MAX(d->shadows + 0.1 * logf(scale / wb[1]), 0.0f);
-  p[2] = MAX(d->shadows + 0.1 * logf(scale / wb[2]), 0.0f);
+  p[0] = MAX(d->shadows + 0.1f * logf(scale / wb[0]), 0.0f);
+  p[1] = MAX(d->shadows + 0.1f * logf(scale / wb[1]), 0.0f);
+  p[2] = MAX(d->shadows + 0.1f * logf(scale / wb[2]), 0.0f);
   p[3] = 1.0f;
 
   // update the coeffs with strength and scale
@@ -1866,7 +1901,7 @@ static void process_variance(dt_iop_module_t *self,
   size_t npixels = (size_t)width * height;
 
   dt_iop_image_copy_by_size(ovoid, ivoid, width, height, 4);
-  if((piece->pipe->type & DT_DEV_PIXELPIPE_PREVIEW) || (g == NULL))
+  if(dt_pipe_is_preview(piece->pipe) || (g == NULL))
   {
     return;
   }
@@ -1935,13 +1970,14 @@ static int process_nlmeans_cl(dt_iop_module_t *self,
                               const dt_iop_roi_t *const roi_in,
                               const dt_iop_roi_t *const roi_out)
 {
-  dt_iop_denoiseprofile_data_t *d = piece->data;
-  dt_iop_denoiseprofile_global_data_t *gd = self->global_data;
-#if USE_NEW_IMPL_CL
+  const dt_iop_denoiseprofile_data_t *d = piece->data;
+  const dt_iop_denoiseprofile_global_data_t *gd = self->global_data;
+
   const int width = roi_in->width;
   const int height = roi_in->height;
+  const int devid = piece->pipe->devid;
 
-  cl_int err = DT_OPENCL_DEFAULT_ERROR;
+  cl_int err = CL_MEM_OBJECT_ALLOCATION_FAILURE;
 
   const float scale = fminf(fminf(roi_in->scale, 2.0f) / fmaxf(piece->iscale, 1.0f), 1.0f);
   const int P = ceilf(d->radius * scale); // pixel filter size
@@ -1954,43 +1990,32 @@ static int process_nlmeans_cl(dt_iop_module_t *self,
   dt_aligned_pixel_t p;
   dt_aligned_pixel_t aa;
   dt_aligned_pixel_t bb;
-  (void)nlmeans_precondition_cl(d,piece,wb,scale,aa,bb,p);
 
-  // allocate a buffer for a preconditioned copy of the image
-  const int devid = piece->pipe->devid;
+  nlmeans_precondition_cl(d,piece,wb,scale,aa,bb,p);
+
   cl_mem dev_tmp = dt_opencl_alloc_device(devid, width, height, sizeof(float) * 4);
-  if(dev_tmp == NULL) return CL_MEM_OBJECT_ALLOCATION_FAILURE;
+  cl_mem dev_U2 = dt_opencl_alloc_device_buffer(devid, sizeof(float) * 4 * width * height);
+  if(!dev_tmp || !dev_U2) goto final;
 
-  const size_t sizes[] = { ROUNDUPDWD(width, devid), ROUNDUPDHT(height, devid), 1 };
-  const float sigma2[4] = { (bb[0] / aa[0]) * (bb[0] / aa[0]),
-                            (bb[1] / aa[1]) * (bb[1] / aa[1]),
-                            (bb[2] / aa[2]) * (bb[2] / aa[2]),
-                            0.0f };
+  const dt_aligned_pixel_t sigma2 = { (bb[0] / aa[0]) * (bb[0] / aa[0]),
+                                      (bb[1] / aa[1]) * (bb[1] / aa[1]),
+                                      (bb[2] / aa[2]) * (bb[2] / aa[2]),
+                                      0.0f };
 
   if(!d->use_new_vst)
-  {
-    dt_opencl_set_kernel_args(devid, gd->kernel_denoiseprofile_precondition,
-                              0, CLARG(dev_in), CLARG(dev_tmp),
-      CLARG(width), CLARG(height), CLARG(aa), CLARG(sigma2));
-    err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_denoiseprofile_precondition, sizes);
-  }
+    err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_denoiseprofile_precondition, width, height,
+            CLARG(dev_in), CLARG(dev_tmp),
+            CLARG(width), CLARG(height), CLARG(aa), CLARG(sigma2));
   else
-  {
-    dt_opencl_set_kernel_args(devid, gd->kernel_denoiseprofile_precondition_v2,
-                              0, CLARG(dev_in), CLARG(dev_tmp),
-      CLARG(width), CLARG(height), CLARG(aa), CLARG(p), CLARG(bb), CLARG(wb));
-    err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_denoiseprofile_precondition_v2,
-                                      sizes);
-  }
+    err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_denoiseprofile_precondition_v2, width, height,
+            CLARG(dev_in), CLARG(dev_tmp),
+            CLARG(width), CLARG(height), CLARG(aa), CLARG(p), CLARG(bb), CLARG(wb));
+  if(err != CL_SUCCESS) goto final;
 
-  // allocate a buffer to receive the denoised image
-  cl_mem dev_U2 = dt_opencl_alloc_device_buffer(devid, sizeof(float) * 4 * width * height);
-  if(dev_U2 == NULL) err = CL_MEM_OBJECT_ALLOCATION_FAILURE;
+#if USE_NEW_IMPL_CL
 
-  if(err == CL_SUCCESS)
-  {
-    const dt_aligned_pixel_t norm2 = { 1.0f, 1.0f, 1.0f, 1.0f };
-    const dt_nlmeans_param_t params =
+  const dt_aligned_pixel_t norm2 = { 1.0f, 1.0f, 1.0f, 1.0f };
+  const dt_nlmeans_param_t params =
       {
         .scattering = scattering,
         .scale = scale,
@@ -2009,64 +2034,13 @@ static int process_nlmeans_cl(dt_iop_module_t *self,
         .kernel_vert = gd->kernel_denoiseprofile_vert,
         .kernel_accu = gd->kernel_denoiseprofile_accu
       };
-    err = nlmeans_denoiseprofile_cl(&params, devid, dev_tmp, dev_U2, roi_in);
-  }
-  if(err == CL_SUCCESS)
-  {
-    if(!d->use_new_vst)
-    {
-      dt_opencl_set_kernel_args(devid, gd->kernel_denoiseprofile_finish,
-                                0, CLARG(dev_in), CLARG(dev_U2),
-        CLARG(dev_out), CLARG(width), CLARG(height), CLARG(aa), CLARG(sigma2));
-      err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_denoiseprofile_finish, sizes);
-    }
-    else
-    {
-      const float bias = d->bias - 0.5 * logf(scale);
-      dt_opencl_set_kernel_args(devid, gd->kernel_denoiseprofile_finish_v2, 0,
-                                CLARG(dev_in), CLARG(dev_U2),
-                                CLARG(dev_out), CLARG(width), CLARG(height),
-                                CLARG(aa), CLARG(p),
-                                CLARG(bb), CLARG(bias), CLARG(wb));
-      err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_denoiseprofile_finish_v2, sizes);
-    }
-  }
-  dt_opencl_release_mem_object(dev_U2);
-  dt_opencl_release_mem_object(dev_tmp);
-  return err;
+  err = nlmeans_denoiseprofile_cl(&params, devid, dev_tmp, dev_U2, roi_in);
+  if(err != CL_SUCCESS) goto final;
 
-#else
-  const int width = roi_in->width;
-  const int height = roi_in->height;
-
-  cl_int err = CL_MEM_OBJECT_ALLOCATION_FAILURE;
-
-  const float scale = fminf(fminf(roi_in->scale, 2.0f) / fmaxf(piece->iscale, 1.0f), 1.0f);
-  const int P = ceilf(d->radius * scale); // pixel filter size
-  int K = d->nbhood; // nbhood
-  const float scattering = nlmeans_scattering(&K,d,piece,scale);
-  const float norm = nlmeans_norm(P,d);
-  const float central_pixel_weight = d->central_pixel_weight * scale;
-
-  dt_aligned_pixel_t wb;
-  dt_aligned_pixel_t p;
-  dt_aligned_pixel_t aa;
-  dt_aligned_pixel_t bb;
-  (void)nlmeans_precondition_cl(d,piece,wb,scale,aa,bb,p);
-
-  const dt_aligned_pixel_t sigma2 = { (bb[0] / aa[0]) * (bb[0] / aa[0]),
-                                      (bb[1] / aa[1]) * (bb[1] / aa[1]),
-                                      (bb[2] / aa[2]) * (bb[2] / aa[2]),
-                                      0.0f };
-
-  const int devid = piece->pipe->devid;
-  cl_mem dev_tmp = dt_opencl_alloc_device(devid, width, height, sizeof(float) * 4);
-  if(dev_tmp == NULL) goto error;
-
-  cl_mem dev_U2 = dt_opencl_alloc_device_buffer(devid, sizeof(float) * 4 * width * height);
-  if(dev_U2 == NULL) goto error;
+#else // old&current code
 
   cl_mem buckets[NUM_BUCKETS] = { NULL };
+
   unsigned int state = 0;
   for(int k = 0; k < NUM_BUCKETS; k++)
   {
@@ -2085,7 +2059,7 @@ static int process_nlmeans_cl(dt_iop_module_t *self,
                                   .sizex = 1u << 16,
                                   .sizey = 1 };
 
-  if(dt_opencl_local_buffer_opt(devid, gd->kernel_denoiseprofile_horiz, &hlocopt))
+  if(dt_opencl_local_buffer_opt(devid, gd->kernel_denoiseprofile_horiz, &hlocopt) == CL_SUCCESS)
     hblocksize = hlocopt.sizex;
   else
     hblocksize = 1;
@@ -2101,43 +2075,19 @@ static int process_nlmeans_cl(dt_iop_module_t *self,
                                   .sizex = 1,
                                   .sizey = 1u << 16 };
 
-  if(dt_opencl_local_buffer_opt(devid, gd->kernel_denoiseprofile_vert, &vlocopt))
+  if(dt_opencl_local_buffer_opt(devid, gd->kernel_denoiseprofile_vert, &vlocopt) == CL_SUCCESS)
     vblocksize = vlocopt.sizey;
   else
     vblocksize = 1;
 
-
-  const size_t sizes[] = { ROUNDUPDWD(width, devid), ROUNDUPDHT(height, devid), 1 };
-  size_t sizesl[3];
-  size_t local[3];
-
-  if(!d->use_new_vst)
-  {
-    dt_opencl_set_kernel_args(devid, gd->kernel_denoiseprofile_precondition,
-                              0, CLARG(dev_in), CLARG(dev_tmp),
-      CLARG(width), CLARG(height), CLARG(aa), CLARG(sigma2));
-    err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_denoiseprofile_precondition, sizes);
-    if(err != CL_SUCCESS) goto error;
-  }
-  else
-  {
-    dt_opencl_set_kernel_args(devid, gd->kernel_denoiseprofile_precondition_v2, 0,
-                              CLARG(dev_in), CLARG(dev_tmp),
-                              CLARG(width), CLARG(height),
-                              CLARG(aa), CLARG(p), CLARG(bb), CLARG(wb));
-    err = dt_opencl_enqueue_kernel_2d(devid,
-                                      gd->kernel_denoiseprofile_precondition_v2, sizes);
-    if(err != CL_SUCCESS) goto error;
-  }
-
-  dt_opencl_set_kernel_args(devid, gd->kernel_denoiseprofile_init, 0,
-                            CLARG(dev_U2), CLARG(width),
-                            CLARG(height));
-  err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_denoiseprofile_init, sizes);
+  err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_denoiseprofile_init, width, height,
+            CLARG(dev_U2), CLARG(width), CLARG(height));
   if(err != CL_SUCCESS) goto error;
 
   const size_t bwidth = ROUNDUP(width, hblocksize);
   const size_t bheight = ROUNDUP(height, vblocksize);
+  size_t sizesl[2];
+  size_t local[2];
 
   for(int kj_index = -K; kj_index <= 0; kj_index++)
   {
@@ -2159,88 +2109,71 @@ static int process_nlmeans_cl(dt_iop_module_t *self,
       int q[2] = { i, j };
 
       cl_mem dev_U4 = buckets[bucket_next(&state, NUM_BUCKETS)];
-      dt_opencl_set_kernel_args(devid, gd->kernel_denoiseprofile_dist, 0,
-                                CLARG(dev_tmp), CLARG(dev_U4),
-                                CLARG(width), CLARG(height), CLARG(q));
-      err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_denoiseprofile_dist, sizes);
+      err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_denoiseprofile_dist, width, height,
+                CLARG(dev_tmp), CLARG(dev_U4), CLARG(width), CLARG(height), CLARG(q));
       if(err != CL_SUCCESS) goto error;
 
       sizesl[0] = bwidth;
       sizesl[1] = ROUNDUPDHT(height, devid);
-      sizesl[2] = 1;
       local[0] = hblocksize;
       local[1] = 1;
-      local[2] = 1;
       cl_mem dev_U4_t = buckets[bucket_next(&state, NUM_BUCKETS)];
-      dt_opencl_set_kernel_args(devid, gd->kernel_denoiseprofile_horiz,
-                                0, CLARG(dev_U4), CLARG(dev_U4_t),
-                                CLARG(width), CLARG(height), CLARG(q), CLARG(P),
-                                CLLOCAL(sizeof(float) * (hblocksize + 2 * P)));
-      err = dt_opencl_enqueue_kernel_2d_with_local(devid,
-                                                   gd->kernel_denoiseprofile_horiz,
-                                                   sizesl, local);
+      err = dt_opencl_enqueue_kernel_2d_local_args(devid, gd->kernel_denoiseprofile_horiz, sizesl, local,
+                CLARG(dev_U4), CLARG(dev_U4_t),
+                CLARG(width), CLARG(height), CLARG(q), CLARG(P),
+                CLLOCAL(sizeof(float) * (hblocksize + 2 * P)));
       if(err != CL_SUCCESS) goto error;
 
       sizesl[0] = ROUNDUPDWD(width, devid);
       sizesl[1] = bheight;
-      sizesl[2] = 1;
       local[0] = 1;
       local[1] = vblocksize;
-      local[2] = 1;
       cl_mem dev_U4_tt = buckets[bucket_next(&state, NUM_BUCKETS)];
-      dt_opencl_set_kernel_args(devid, gd->kernel_denoiseprofile_vert,
-                                0, CLARG(dev_U4_t), CLARG(dev_U4_tt),
-                                CLARG(width), CLARG(height),
-                                CLARG(q), CLARG(P), CLARG(norm),
-                                CLLOCAL(sizeof(float) * (vblocksize + 2 * P)),
-                                CLARG(central_pixel_weight), CLARG(dev_U4));
-      err = dt_opencl_enqueue_kernel_2d_with_local
-        (devid,
-         gd->kernel_denoiseprofile_vert, sizesl, local);
+      err = dt_opencl_enqueue_kernel_2d_local_args(devid, gd->kernel_denoiseprofile_vert, sizesl, local,
+              CLARG(dev_U4_t), CLARG(dev_U4_tt),
+              CLARG(width), CLARG(height),
+              CLARG(q), CLARG(P), CLARG(norm),
+              CLLOCAL(sizeof(float) * (vblocksize + 2 * P)),
+              CLARG(central_pixel_weight), CLARG(dev_U4));
       if(err != CL_SUCCESS) goto error;
 
-
-      dt_opencl_set_kernel_args(devid, gd->kernel_denoiseprofile_accu,
-                                0, CLARG(dev_tmp), CLARG(dev_U2),
-                                CLARG(dev_U4_tt), CLARG(width),
-                                CLARG(height), CLARG(q));
-      err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_denoiseprofile_accu, sizes);
+      err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_denoiseprofile_accu, width, height,
+                          CLARG(dev_tmp), CLARG(dev_U2), CLARG(dev_U4_tt),
+                          CLARG(width), CLARG(height), CLARG(q));
       if(err != CL_SUCCESS) goto error;
-
       dt_opencl_finish_sync_pipe(devid, piece->pipe->type);
-
-      // indirectly give gpu some air to breathe (and to do display related stuff)
-      dt_iop_nap(dt_opencl_micro_nap(devid));
     }
-  }
-
-  if(!d->use_new_vst)
-  {
-    dt_opencl_set_kernel_args(devid, gd->kernel_denoiseprofile_finish, 0,
-                              CLARG(dev_in), CLARG(dev_U2),
-                              CLARG(dev_out), CLARG(width), CLARG(height),
-                              CLARG(aa), CLARG(sigma2));
-    err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_denoiseprofile_finish, sizes);
-  }
-  else
-  {
-    const float bias = d->bias - 0.5 * logf(scale);
-    dt_opencl_set_kernel_args(devid, gd->kernel_denoiseprofile_finish_v2, 0,
-                              CLARG(dev_in), CLARG(dev_U2),
-                              CLARG(dev_out), CLARG(width), CLARG(height),
-                              CLARG(aa), CLARG(p), CLARG(bb), CLARG(bias), CLARG(wb));
-    err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_denoiseprofile_finish_v2, sizes);
   }
 
  error:
   for(int k = 0; k < NUM_BUCKETS; k++)
-  {
     dt_opencl_release_mem_object(buckets[k]);
+
+#endif /* shared finalize USE_NEW_IMPL_CL */
+
+  if(err == CL_SUCCESS)
+  {
+    if(!d->use_new_vst)
+    {
+      err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_denoiseprofile_finish, width, height,
+                              CLARG(dev_in), CLARG(dev_U2),
+                              CLARG(dev_out), CLARG(width), CLARG(height),
+                              CLARG(aa), CLARG(sigma2));
+    }
+    else
+    {
+      const float bias = d->bias - 0.5 * logf(scale);
+      err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_denoiseprofile_finish_v2, width, height,
+                              CLARG(dev_in), CLARG(dev_U2),
+                              CLARG(dev_out), CLARG(width), CLARG(height),
+                              CLARG(aa), CLARG(p), CLARG(bb), CLARG(bias), CLARG(wb));
+    }
   }
+
+final:
   dt_opencl_release_mem_object(dev_U2);
   dt_opencl_release_mem_object(dev_tmp);
   return err;
-#endif /* USE_NEW_IMPL_CL */
 }
 
 
@@ -2251,8 +2184,8 @@ static int process_wavelets_cl(dt_iop_module_t *self,
                                const dt_iop_roi_t *const roi_in,
                                const dt_iop_roi_t *const roi_out)
 {
-  dt_iop_denoiseprofile_data_t *d = piece->data;
-  dt_iop_denoiseprofile_global_data_t *gd = self->global_data;
+  const dt_iop_denoiseprofile_data_t *d = piece->data;
+  const dt_iop_denoiseprofile_global_data_t *gd = self->global_data;
 
   const int max_max_scale = DT_IOP_DENOISE_PROFILE_BANDS; // hard limit
   int max_scale = 0;
@@ -2287,6 +2220,8 @@ static int process_wavelets_cl(dt_iop_module_t *self,
   cl_mem dev_m = NULL;
   cl_mem dev_r = NULL;
   cl_mem dev_filter = NULL;
+  cl_mem dev_Y0U0V0 = NULL;
+  cl_mem dev_RGB = NULL;
   cl_mem *dev_detail = calloc(max_max_scale, sizeof(cl_mem));
   float *sumsum = NULL;
 
@@ -2296,9 +2231,8 @@ static int process_wavelets_cl(dt_iop_module_t *self,
   if(npixels < 2)
   {
     // copy original input from dev_in -> dev_out
-    size_t origin[] = { 0, 0, 0 };
-    size_t region[] = { width, height, 1 };
-    err = dt_opencl_enqueue_copy_image(devid, dev_in, dev_out, origin, origin, region);
+    const size_t region[2] = { width, height };
+    err = dt_opencl_enqueue_copy_image(devid, dev_in, dev_out, CLIMG_ORIGIN, CLIMG_ORIGIN, region);
     if(err != CL_SUCCESS) goto error;
     free(dev_detail);
     return CL_SUCCESS;
@@ -2314,11 +2248,8 @@ static int process_wavelets_cl(dt_iop_module_t *self,
                                   .sizex = 1u << 4,
                                   .sizey = 1u << 4 };
 
-  if(!dt_opencl_local_buffer_opt(devid, gd->kernel_denoiseprofile_reduce_first, &flocopt))
-  {
-    err = CL_INVALID_WORK_DIMENSION;
-    goto error;
-  }
+  err = dt_opencl_local_buffer_opt(devid, gd->kernel_denoiseprofile_reduce_first, &flocopt);
+  if(err != CL_SUCCESS) goto error;
 
   const size_t bwidth = ROUNDUP(width, flocopt.sizex);
   const size_t bheight = ROUNDUP(height, flocopt.sizey);
@@ -2335,27 +2266,19 @@ static int process_wavelets_cl(dt_iop_module_t *self,
                                   .sizex = 1u << 16,
                                   .sizey = 1 };
 
-  if(!dt_opencl_local_buffer_opt(devid, gd->kernel_denoiseprofile_reduce_first, &slocopt))
-  {
-    err = CL_INVALID_WORK_DIMENSION;
-    goto error;
-  }
+  err = dt_opencl_local_buffer_opt(devid, gd->kernel_denoiseprofile_reduce_first, &slocopt);
+  if(err != CL_SUCCESS) goto error;
 
   const int reducesize = MIN(REDUCESIZE, ROUNDUP(bufsize, slocopt.sizex) / slocopt.sizex);
   err = CL_MEM_OBJECT_ALLOCATION_FAILURE;
   dev_m = dt_opencl_alloc_device_buffer(devid, sizeof(float) * 4 * bufsize);
-  if(dev_m == NULL) goto error;
-
   dev_r = dt_opencl_alloc_device_buffer(devid, sizeof(float) * 4 * reducesize);
-  if(dev_r == NULL) goto error;
-
   sumsum = dt_alloc_align_float((size_t)4 * reducesize);
-  if(sumsum == NULL) goto error;
-
   dev_tmp = dt_opencl_alloc_device(devid, width, height, sizeof(float) * 4);
-  if(dev_tmp == NULL) goto error;
 
-  float m[] = { 0.0625f, 0.25f, 0.375f, 0.25f, 0.0625f }; // 1/16, 4/16, 6/16, 4/16, 1/16
+  if(!dev_tmp || !dev_r || !dev_m || !sumsum) goto error;
+
+  const float m[] = { 0.0625f, 0.25f, 0.375f, 0.25f, 0.0625f }; // 1/16, 4/16, 6/16, 4/16, 1/16
   float mm[5][5];
   for(int j = 0; j < 5; j++)
     for(int i = 0; i < 5; i++) mm[j][i] = m[i] * m[j];
@@ -2428,41 +2351,27 @@ static int process_wavelets_cl(dt_iop_module_t *self,
     }
   }
 
-  size_t sizes[] = { ROUNDUPDWD(width, devid), ROUNDUPDHT(height, devid), 1 };
-
   if(!d->use_new_vst)
   {
-    dt_opencl_set_kernel_args(devid, gd->kernel_denoiseprofile_precondition,
-                              0, CLARG(dev_in), CLARG(dev_out),
-                              CLARG(width), CLARG(height), CLARG(aa), CLARG(sigma2));
-    err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_denoiseprofile_precondition, sizes);
-    if(err != CL_SUCCESS) goto error;
+    err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_denoiseprofile_precondition, width, height,
+            CLARG(dev_in), CLARG(dev_out), CLARG(width), CLARG(height), CLARG(aa), CLARG(sigma2));
   }
   else if(d->wavelet_color_mode == MODE_RGB)
   {
-    dt_opencl_set_kernel_args(devid, gd->kernel_denoiseprofile_precondition_v2,
-                              0, CLARG(dev_in), CLARG(dev_out),
-                              CLARG(width), CLARG(height),
-                              CLARG(aa), CLARG(p), CLARG(bb), CLARG(wb));
-    err = dt_opencl_enqueue_kernel_2d(devid,
-                                      gd->kernel_denoiseprofile_precondition_v2, sizes);
-    if(err != CL_SUCCESS) goto error;
+    err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_denoiseprofile_precondition_v2, width, height,
+            CLARG(dev_in), CLARG(dev_out), CLARG(width), CLARG(height), CLARG(aa), CLARG(p), CLARG(bb), CLARG(wb));
   }
   else
   {
     err = CL_MEM_OBJECT_ALLOCATION_FAILURE;
-    cl_mem dev_Y0U0V0 = dt_opencl_copy_host_to_device_constant(devid, sizeof(float) * 9, toY0U0V0);
+    dev_Y0U0V0 = dt_opencl_copy_host_to_device_constant(devid, sizeof(float) * 9, toY0U0V0);
     if(dev_Y0U0V0 == NULL) goto error;
-
-    dt_opencl_set_kernel_args(devid, gd->kernel_denoiseprofile_precondition_Y0U0V0,
-                                0, CLARG(dev_in),
-                                CLARG(dev_out), CLARG(width), CLARG(height),
-                                CLARG(aa), CLARG(p), CLARG(bb), CLARG(dev_Y0U0V0));
-    err = dt_opencl_enqueue_kernel_2d(devid,
-                                      gd->kernel_denoiseprofile_precondition_Y0U0V0,
-                                      sizes);
+    err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_denoiseprofile_precondition_Y0U0V0, width, height,
+            CLARG(dev_in), CLARG(dev_out), CLARG(width), CLARG(height),
+            CLARG(aa), CLARG(p), CLARG(bb), CLARG(dev_Y0U0V0));
     dt_opencl_release_mem_object(dev_Y0U0V0);
   }
+  if(err != CL_SUCCESS) goto error;
 
   dev_buf1 = dev_out;
   dev_buf2 = dev_tmp;
@@ -2475,15 +2384,11 @@ static int process_wavelets_cl(dt_iop_module_t *self,
     const float sigma_band = powf(varf, s) * sigma;
     const float inv_sigma2 = 1.0f / (sigma_band * sigma_band);
 
-    dt_opencl_set_kernel_args(devid, gd->kernel_denoiseprofile_decompose,
-                              0, CLARG(dev_buf1), CLARG(dev_buf2),
-                              CLARG(dev_detail[s]), CLARG(width), CLARG(height),
-                              CLARG(s), CLARG(inv_sigma2), CLARG(dev_filter));
-    err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_denoiseprofile_decompose, sizes);
+    err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_denoiseprofile_decompose, width, height,
+            CLARG(dev_buf1), CLARG(dev_buf2),
+            CLARG(dev_detail[s]), CLARG(width), CLARG(height),
+            CLARG(s), CLARG(inv_sigma2), CLARG(dev_filter));
     if(err != CL_SUCCESS) goto error;
-
-    // indirectly give gpu some air to breathe (and to do display related stuff)
-    dt_iop_nap(dt_opencl_micro_nap(devid));
 
     // swap buffers
     cl_mem dev_buf3 = dev_buf2;
@@ -2503,46 +2408,33 @@ static int process_wavelets_cl(dt_iop_module_t *self,
     // determine thrs as bayesshrink
     dt_aligned_pixel_t sum_y2 = { 0.0f };
 
-    size_t lsizes[3];
-    size_t llocal[3];
+    size_t lsizes[2];
+    size_t llocal[2];
 
     lsizes[0] = bwidth;
     lsizes[1] = bheight;
-    lsizes[2] = 1;
     llocal[0] = flocopt.sizex;
     llocal[1] = flocopt.sizey;
-    llocal[2] = 1;
-    dt_opencl_set_kernel_args(devid, gd->kernel_denoiseprofile_reduce_first,
-                              0, CLARG((dev_detail[s])),
+    err = dt_opencl_enqueue_kernel_2d_local_args(devid, gd->kernel_denoiseprofile_reduce_first, lsizes, llocal,
+                              CLARG((dev_detail[s])),
                               CLARG(width), CLARG(height),
                               CLARG(dev_m),
                               CLLOCAL(sizeof(float) * 4 * flocopt.sizex * flocopt.sizey));
-    err = dt_opencl_enqueue_kernel_2d_with_local
-      (devid,
-       gd->kernel_denoiseprofile_reduce_first, lsizes,
-       llocal);
     if(err != CL_SUCCESS) goto error;
 
 
     lsizes[0] = (size_t)reducesize * slocopt.sizex;
     lsizes[1] = 1;
-    lsizes[2] = 1;
     llocal[0] = slocopt.sizex;
     llocal[1] = 1;
-    llocal[2] = 1;
-    dt_opencl_set_kernel_args(devid, gd->kernel_denoiseprofile_reduce_second,
-                              0, CLARG(dev_m), CLARG(dev_r),
+    err = dt_opencl_enqueue_kernel_2d_local_args(devid, gd->kernel_denoiseprofile_reduce_second, lsizes, llocal,
+                              CLARG(dev_m), CLARG(dev_r),
                               CLARG(bufsize), CLLOCAL(sizeof(float) * 4 * slocopt.sizex));
-    err = dt_opencl_enqueue_kernel_2d_with_local
-      (devid,
-       gd->kernel_denoiseprofile_reduce_second, lsizes,
-       llocal);
     if(err != CL_SUCCESS) goto error;
 
     err = dt_opencl_read_buffer_from_device(devid, (void *)sumsum, dev_r, 0,
-                                            sizeof(float) * 4 * reducesize, CL_TRUE);
-    if(err != CL_SUCCESS)
-      goto error;
+                                            sizeof(float) * 4 * reducesize, TRUE);
+    if(err != CL_SUCCESS) goto error;
 
     for(int k = 0; k < reducesize; k++)
     {
@@ -2616,18 +2508,11 @@ static int process_wavelets_cl(dt_iop_module_t *self,
     // dt_print(DT_DEBUG_ALWAYS, "scale %d thrs %f %f %f", s, thrs[0], thrs[1], thrs[2]);
 
     const dt_aligned_pixel_t boost = { 1.0f, 1.0f, 1.0f, 1.0f };
-
-    dt_opencl_set_kernel_args(devid, gd->kernel_denoiseprofile_synthesize,
-                              0, CLARG(dev_buf1), CLARG(dev_detail[s]),
+    err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_denoiseprofile_synthesize, width, height,
+                              CLARG(dev_buf1), CLARG(dev_detail[s]),
                               CLARG(dev_buf2), CLARG(width), CLARG(height),
-                              CLARG(thrs[0]), CLARG(thrs[1]), CLARG(thrs[2]),
-                              CLARG(thrs[3]), CLARG(boost[0]), CLARG(boost[1]),
-                              CLARG(boost[2]), CLARG(boost[3]));
-    err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_denoiseprofile_synthesize, sizes);
+                              CLARG(thrs), CLARG(boost));
     if(err != CL_SUCCESS) goto error;
-
-    // indirectly give gpu some air to breathe (and to do display related stuff)
-    dt_iop_nap(dt_opencl_micro_nap(devid));
 
     // swap buffers
     cl_mem dev_buf3 = dev_buf2;
@@ -2640,55 +2525,41 @@ static int process_wavelets_cl(dt_iop_module_t *self,
   // account, so current output lies in dev_buf1
   if(dev_buf1 != dev_tmp)
   {
-    size_t origin[] = { 0, 0, 0 };
-    size_t region[] = { width, height, 1 };
-    err = dt_opencl_enqueue_copy_image(devid, dev_buf1, dev_tmp, origin, origin, region);
+    const size_t region[2] = { width, height };
+    err = dt_opencl_enqueue_copy_image(devid, dev_buf1, dev_tmp, CLIMG_ORIGIN, CLIMG_ORIGIN, region);
     if(err != CL_SUCCESS) goto error;
   }
 
   if(!d->use_new_vst)
   {
-    dt_opencl_set_kernel_args(devid, gd->kernel_denoiseprofile_backtransform,
-                              0, CLARG(dev_tmp), CLARG(dev_out),
-                              CLARG(width), CLARG(height), CLARG(aa), CLARG(sigma2));
-    err = dt_opencl_enqueue_kernel_2d(devid,
-                                      gd->kernel_denoiseprofile_backtransform, sizes);
-    if(err != CL_SUCCESS) goto error;
+    err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_denoiseprofile_backtransform, width, height,
+            CLARG(dev_tmp), CLARG(dev_out), CLARG(width), CLARG(height), CLARG(aa), CLARG(sigma2));
   }
   else if(d->wavelet_color_mode == MODE_RGB)
   {
     const float bias = d->bias - 0.5 * logf(scale);
-    dt_opencl_set_kernel_args(devid,
-                              gd->kernel_denoiseprofile_backtransform_v2, 0,
-                              CLARG(dev_tmp),
-                              CLARG(dev_out), CLARG(width), CLARG(height),
+    err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_denoiseprofile_backtransform_v2, width, height,
+                              CLARG(dev_tmp), CLARG(dev_out), CLARG(width), CLARG(height),
                               CLARG(aa), CLARG(p), CLARG(bb), CLARG(bias), CLARG(wb));
-    err = dt_opencl_enqueue_kernel_2d(devid,
-                                      gd->kernel_denoiseprofile_backtransform_v2, sizes);
-    if(err != CL_SUCCESS) goto error;
   }
   else
   {
-    cl_mem dev_RGB = dt_opencl_copy_host_to_device_constant(devid, sizeof(float) * 9, toRGB);
+    err = CL_MEM_OBJECT_ALLOCATION_FAILURE;
+    dev_RGB = dt_opencl_copy_host_to_device_constant(devid, sizeof(float) * 9, toRGB);
     if(dev_RGB == NULL) goto error;
 
     const float bias = d->bias - 0.5 * logf(scale);
-    dt_opencl_set_kernel_args(devid,
-                              gd->kernel_denoiseprofile_backtransform_Y0U0V0, 0,
+    err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_denoiseprofile_backtransform_Y0U0V0, width, height,
                               CLARG(dev_tmp),
                               CLARG(dev_out), CLARG(width), CLARG(height),
                               CLARG(aa), CLARG(p), CLARG(bb), CLARG(bias), CLARG(wb),
                               CLARG(dev_RGB));
-    err = dt_opencl_enqueue_kernel_2d(devid,
-                                        gd->kernel_denoiseprofile_backtransform_Y0U0V0,
-                                        sizes);
-    dt_opencl_release_mem_object(dev_RGB);
-    if(err != CL_SUCCESS) goto error;
   }
-
-  dt_opencl_finish_sync_pipe(devid, piece->pipe->type);
+  if(err == CL_SUCCESS)
+    dt_opencl_finish_sync_pipe(devid, piece->pipe->type);
 
 error:
+  dt_opencl_release_mem_object(dev_RGB);
   dt_opencl_release_mem_object(dev_r);
   dt_opencl_release_mem_object(dev_m);
   dt_opencl_release_mem_object(dev_tmp);
@@ -2781,6 +2652,20 @@ void init(dt_iop_module_t *self)
   }
 }
 
+static int _get_iso_highlight_preservation_shift(dt_image_t *img)
+{
+  const float hilight_pres = img->exif_highlight_preservation;
+  // Only compensate whole EV steps, as non-whole steps are (based on
+  // experience and discussion in #19624) handled by different means in the
+  // camera.
+  const int shift = floorf(hilight_pres);
+  if(shift <= 0)
+  {
+    return 0;
+  }
+  return shift;
+}
+
 /** this will be called to init new defaults if a new image is loaded
  * from film strip mode. */
 void reload_defaults(dt_iop_module_t *self)
@@ -2802,40 +2687,18 @@ void reload_defaults(dt_iop_module_t *self)
   d->use_new_vst = TRUE;
   d->wavelet_color_mode = MODE_Y0U0V0;
 
+  const int iso_shift = _get_iso_highlight_preservation_shift(&self->dev->image_storage);
+  d->compensate_hilite_pres = iso_shift > 0;
+
   GList *profiles = dt_noiseprofile_get_matching(&self->dev->image_storage);
-  const int iso = self->dev->image_storage.exif_iso;
-
-  // default to generic poissonian
-  dt_noiseprofile_t interpolated = dt_noiseprofile_generic;
-
   char name[512];
-
-  g_strlcpy(name, _(interpolated.name), sizeof(name));
-
-  dt_noiseprofile_t *last = NULL;
-  for(GList *iter = profiles; iter; iter = g_list_next(iter))
+  gboolean autodetected = FALSE;
+  dt_noiseprofile_t interpolated = dt_iop_denoiseprofile_get_auto_profile
+      (self, profiles, name, sizeof(name), &autodetected, d->compensate_hilite_pres);
+  if(autodetected)
   {
-    dt_noiseprofile_t *current = iter->data;
-
-    if(current->iso == iso)
-    {
-      interpolated = *current;
-      // signal later autodetection in commit_params:
-      interpolated.a[0] = -1.0f;
-      snprintf(name, sizeof(name), _("found match for ISO %d"), iso);
-      break;
-    }
-    if(last && last->iso < iso && current->iso > iso)
-    {
-      interpolated.iso = iso;
-      dt_noiseprofile_interpolate(last, current, &interpolated);
-      // signal later autodetection in commit_params:
-      interpolated.a[0] = -1.0f;
-      snprintf(name, sizeof(name), _("interpolated from ISO %d and %d"),
-               last->iso, current->iso);
-      break;
-    }
-    last = current;
+    // signal later autodetection in commit_params.
+    interpolated.a[0] = -1.0f;
   }
 
   const float a = interpolated.a[1];
@@ -2937,12 +2800,38 @@ void cleanup_global(dt_iop_module_so_t *self)
   self->data = NULL;
 }
 
-static dt_noiseprofile_t dt_iop_denoiseprofile_get_auto_profile(dt_iop_module_t *self)
+static dt_noiseprofile_t dt_iop_denoiseprofile_get_auto_profile(dt_iop_module_t *self,
+                                                                GList *profiles,
+                                                                char *name,
+                                                                const size_t namelen,
+                                                                gboolean *autodetected,
+                                                                const gboolean compensate_hilite_pres)
 {
-  GList *profiles = dt_noiseprofile_get_matching(&self->dev->image_storage);
+  gboolean profiles_allocated = FALSE;
+  if(profiles == NULL)
+  {
+    profiles = dt_noiseprofile_get_matching(&self->dev->image_storage);
+    profiles_allocated = TRUE;
+  }
   dt_noiseprofile_t interpolated = dt_noiseprofile_generic; // default to generic poissonian
 
-  const int iso = self->dev->image_storage.exif_iso;
+  if(autodetected != NULL)
+  {
+    *autodetected = FALSE;
+  }
+  if(name != NULL)
+  {
+    g_strlcpy(name, _(interpolated.name), namelen);
+  }
+
+  const int exif_iso = self->dev->image_storage.exif_iso;
+  int iso = exif_iso;
+  int shift = 0;
+  if(compensate_hilite_pres)
+  {
+    shift = _get_iso_highlight_preservation_shift(&self->dev->image_storage);
+    iso >>= shift;
+  }
   dt_noiseprofile_t *last = NULL;
   for(GList *iter = profiles; iter; iter = g_list_next(iter))
   {
@@ -2950,17 +2839,50 @@ static dt_noiseprofile_t dt_iop_denoiseprofile_get_auto_profile(dt_iop_module_t 
     if(current->iso == iso)
     {
       interpolated = *current;
+      if(autodetected != NULL)
+      {
+        *autodetected = TRUE;
+      }
+      if(name != NULL)
+      {
+        if(iso != exif_iso)
+        {
+          snprintf(name, namelen, _("found ISO %d (ISO %d %+d EV)"), iso, exif_iso, -shift);
+        }
+        else
+        {
+          snprintf(name, namelen, _("found ISO %d"), iso);
+        }
+      }
       break;
     }
     if(last && last->iso < iso && current->iso > iso)
     {
       interpolated.iso = iso;
       dt_noiseprofile_interpolate(last, current, &interpolated);
+      if(autodetected != NULL)
+      {
+        *autodetected = TRUE;
+      }
+      if(name != NULL)
+      {
+        if(iso != exif_iso)
+        {
+          snprintf(name, namelen, _("interpolated ISO %d (ISO %d %+d EV)"), iso, exif_iso, -shift);
+        }
+        else
+        {
+          snprintf(name, namelen, _("interpolated ISO %d"), iso);
+        }
+      }
       break;
     }
     last = current;
   }
-  g_list_free_full(profiles, dt_noiseprofile_free);
+  if(profiles_allocated)
+  {
+    g_list_free_full(profiles, dt_noiseprofile_free);
+  }
   return interpolated;
 }
 
@@ -2990,9 +2912,9 @@ void commit_params(dt_iop_module_t *self,
   if(p->a[0] == -1.0)
   {
     // autodetect matching profile again, the same way as detecting their names,
-    // this is partially duplicated code and data because we are not allowed to access
-    // gui_data here ..
-    dt_noiseprofile_t interpolated = dt_iop_denoiseprofile_get_auto_profile(self);
+    // because we are not allowed to access gui_data here ..
+    dt_noiseprofile_t interpolated =
+        dt_iop_denoiseprofile_get_auto_profile(self, NULL, NULL, 0, NULL, p->compensate_hilite_pres);
     for(int k = 0; k < 3; k++)
     {
       d->a[k] = interpolated.a[k];
@@ -3137,14 +3059,17 @@ void gui_changed(dt_iop_module_t *self, GtkWidget *w, void *previous)
                             p->wavelet_color_mode == MODE_Y0U0V0);
   }
 
-  if(!w || w == g->overshooting)
+  if(!w || w == g->overshooting || w == g->compensate_hilite_pres)
   {
     float a = p->a[1];
     if(p->a[0] == -1.0)
     {
       dt_bauhaus_combobox_set(g->profile, 0);
 
-      dt_noiseprofile_t interpolated = dt_iop_denoiseprofile_get_auto_profile(self);
+      char name[512];
+      dt_noiseprofile_t interpolated = dt_iop_denoiseprofile_get_auto_profile(self, NULL, name, sizeof(name), NULL,
+                                                                              p->compensate_hilite_pres);
+      dt_bauhaus_combobox_set_entry_label(g->profile, 0, name);
       a = interpolated.a[1];
     }
 
@@ -3192,12 +3117,17 @@ void gui_update(dt_iop_module_t *self)
 
   gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g->wb_adaptive_anscombe),
                                p->wb_adaptive_anscombe);
+  gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g->compensate_hilite_pres), p->compensate_hilite_pres);
   gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g->fix_anscombe_and_nlmeans_norm),
                                p->fix_anscombe_and_nlmeans_norm);
   gtk_widget_set_visible(g->fix_anscombe_and_nlmeans_norm,
                          !p->fix_anscombe_and_nlmeans_norm);
   gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g->use_new_vst), p->use_new_vst);
   gtk_widget_set_visible(g->use_new_vst, !p->use_new_vst);
+
+  const int iso_shift = _get_iso_highlight_preservation_shift(&self->dev->image_storage);
+  gtk_widget_set_visible(g->compensate_hilite_pres, iso_shift > 0);
+
   if((p->wavelet_color_mode == MODE_Y0U0V0) && (g->channel < DT_DENOISE_PROFILE_Y0))
   {
     g->channel = DT_DENOISE_PROFILE_Y0;
@@ -3250,31 +3180,31 @@ static gboolean denoiseprofile_draw_variance(GtkWidget *widget,
                                              cairo_t *crf,
                                              dt_iop_module_t *self)
 {
-  if(darktable.gui->reset) return FALSE;
+  DT_GUARD_GUI_UPDATE(FALSE);
   dt_iop_denoiseprofile_gui_data_t *g = self->gui_data;
 
   if(!dt_isnan(g->variance_R))
   {
     gchar *str = g_strdup_printf("%.2f", g->variance_R);
-    ++darktable.gui->reset;
+    DT_ENTER_GUI_UPDATE();
     gtk_label_set_text(g->label_var_R, str);
-    --darktable.gui->reset;
+    DT_LEAVE_GUI_UPDATE();
     g_free(str);
   }
   if(!dt_isnan(g->variance_G))
   {
     gchar *str = g_strdup_printf("%.2f", g->variance_G);
-    ++darktable.gui->reset;
+    DT_ENTER_GUI_UPDATE();
     gtk_label_set_text(g->label_var_G, str);
-    --darktable.gui->reset;
+    DT_LEAVE_GUI_UPDATE();
     g_free(str);
   }
   if(!dt_isnan(g->variance_B))
   {
     gchar *str = g_strdup_printf("%.2f", g->variance_B);
-    ++darktable.gui->reset;
+    DT_ENTER_GUI_UPDATE();
     gtk_label_set_text(g->label_var_B, str);
-    --darktable.gui->reset;
+    DT_LEAVE_GUI_UPDATE();
     g_free(str);
   }
   return FALSE;
@@ -3477,7 +3407,7 @@ static gboolean denoiseprofile_draw(GtkWidget *widget,
   pango_layout_set_font_description(layout, desc);
   cairo_set_source_rgb(cr, .1, .1, .1);
 
-  pango_layout_set_text(layout, _("coarse"), -1);
+  pango_layout_set_text(layout, C_("graph", "coarse"), -1);
   pango_layout_get_pixel_extents(layout, &ink, NULL);
   cairo_move_to(cr, .02 * width - ink.y, .5 * (height + ink.width));
   cairo_save(cr);
@@ -3564,7 +3494,7 @@ static gboolean denoiseprofile_button_press(GtkWidget *widget,
     dt_dev_add_history_item(darktable.develop, self, TRUE);
     gtk_widget_queue_draw(GTK_WIDGET(g->area));
   }
-  else if(event->button == 1)
+  else if(event->button == GDK_BUTTON_PRIMARY)
   {
     g->drag_params = *(dt_iop_denoiseprofile_params_t *)self->params;
     const int inset = DT_IOP_DENOISE_PROFILE_INSET;
@@ -3585,7 +3515,7 @@ static gboolean denoiseprofile_button_release(GtkWidget *widget,
                                               GdkEventButton *event,
                                               dt_iop_module_t *self)
 {
-  if(event->button == 1)
+  if(event->button == GDK_BUTTON_PRIMARY)
   {
     dt_iop_denoiseprofile_gui_data_t *g = self->gui_data;
     g->dragging = 0;
@@ -3632,7 +3562,7 @@ static void denoiseprofile_tab_switch(GtkNotebook *notebook,
                                       dt_iop_module_t *self)
 {
   dt_iop_denoiseprofile_params_t *p = self->params;
-  if(darktable.gui->reset) return;
+  DT_GUARD_GUI_UPDATE();
   dt_iop_denoiseprofile_gui_data_t *g = self->gui_data;
   if(p->wavelet_color_mode == MODE_Y0U0V0)
     g->channel = (dt_iop_denoiseprofile_channel_t)page_num + DT_DENOISE_PROFILE_Y0;
@@ -3651,7 +3581,7 @@ void gui_init(dt_iop_module_t *self)
   g->channel = 0;
 
   // First build sub-level boxes
-  g->box_nlm = self->widget = gtk_box_new(GTK_ORIENTATION_VERTICAL, DT_BAUHAUS_SPACE);
+  g->box_nlm = self->widget = dt_gui_vbox();
 
   g->radius = dt_bauhaus_slider_from_params(self, "radius");
   dt_bauhaus_slider_set_soft_range(g->radius, 0.0, 8.0);
@@ -3663,7 +3593,7 @@ void gui_init(dt_iop_module_t *self)
   g->central_pixel_weight = dt_bauhaus_slider_from_params(self, "central_pixel_weight");
   dt_bauhaus_slider_set_soft_max(g->central_pixel_weight, 1.0f);
 
-  g->box_wavelets = self->widget = gtk_box_new(GTK_ORIENTATION_VERTICAL, DT_BAUHAUS_SPACE);
+  g->box_wavelets = self->widget = dt_gui_vbox();
 
   g->wavelet_color_mode = dt_bauhaus_combobox_from_params(self, "wavelet_color_mode");
 
@@ -3676,16 +3606,12 @@ void gui_init(dt_iop_module_t *self)
   dt_ui_notebook_page(g->channel_tabs, N_("B"), NULL);
   g_signal_connect(G_OBJECT(g->channel_tabs), "switch_page",
                    G_CALLBACK(denoiseprofile_tab_switch), self);
-  gtk_box_pack_start(GTK_BOX(g->box_wavelets),
-                     GTK_WIDGET(g->channel_tabs), FALSE, FALSE, 0);
 
   g->channel_tabs_Y0U0V0 = GTK_NOTEBOOK(gtk_notebook_new());
   dt_ui_notebook_page(g->channel_tabs_Y0U0V0, N_("Y0"), NULL);
   dt_ui_notebook_page(g->channel_tabs_Y0U0V0, N_("U0V0"), NULL);
   g_signal_connect(G_OBJECT(g->channel_tabs_Y0U0V0), "switch_page",
                    G_CALLBACK(denoiseprofile_tab_switch), self);
-  gtk_box_pack_start(GTK_BOX(g->box_wavelets),
-                     GTK_WIDGET(g->channel_tabs_Y0U0V0), FALSE, FALSE, 0);
 
   const int ch = (int)g->channel;
   g->transition_curve = dt_draw_curve_new(0.0, 1.0, CATMULL_ROM);
@@ -3717,54 +3643,44 @@ void gui_init(dt_iop_module_t *self)
                    G_CALLBACK(denoiseprofile_leave_notify), self);
   g_signal_connect(G_OBJECT(g->area), "scroll-event",
                    G_CALLBACK(denoiseprofile_scrolled), self);
-  gtk_box_pack_start(GTK_BOX(g->box_wavelets), GTK_WIDGET(g->area), FALSE, FALSE, 0);
 
-  g->box_variance = gtk_box_new(GTK_ORIENTATION_VERTICAL, DT_BAUHAUS_SPACE);
+  dt_gui_box_add(g->box_wavelets, g->channel_tabs, g->channel_tabs_Y0U0V0, g->area);
+
 
   g->label_var = GTK_LABEL(dt_ui_label_new(_("use only with a perfectly\n"
                                              "uniform image if you want to\n"
                                              "estimate the noise variance.")));
-  gtk_box_pack_start(GTK_BOX(g->box_variance), GTK_WIDGET(g->label_var), TRUE, TRUE, 0);
 
-  GtkBox *hboxR = GTK_BOX(gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0));
-  GtkLabel *labelR = GTK_LABEL(dt_ui_label_new(_("variance red: ")));
-  gtk_box_pack_start(GTK_BOX(hboxR), GTK_WIDGET(labelR), FALSE, FALSE, 0);
   g->label_var_R = GTK_LABEL(dt_ui_label_new("")); // This gets filled in by process
   gtk_widget_set_tooltip_text(GTK_WIDGET(g->label_var_R),
                               _("variance computed on the red channel"));
-  gtk_box_pack_start(GTK_BOX(hboxR), GTK_WIDGET(g->label_var_R), FALSE, FALSE, 0);
-  gtk_box_pack_start(GTK_BOX(g->box_variance), GTK_WIDGET(hboxR), TRUE, TRUE, 0);
 
-  GtkBox *hboxG = GTK_BOX(gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0));
-  GtkLabel *labelG = GTK_LABEL(dt_ui_label_new(_("variance green: ")));
-  gtk_box_pack_start(GTK_BOX(hboxG), GTK_WIDGET(labelG), FALSE, FALSE, 0);
   g->label_var_G = GTK_LABEL(dt_ui_label_new("")); // This gets filled in by process
   gtk_widget_set_tooltip_text(GTK_WIDGET(g->label_var_G),
                               _("variance computed on the green channel"));
-  gtk_box_pack_start(GTK_BOX(hboxG), GTK_WIDGET(g->label_var_G), FALSE, FALSE, 0);
-  gtk_box_pack_start(GTK_BOX(g->box_variance), GTK_WIDGET(hboxG), TRUE, TRUE, 0);
 
-  GtkBox *hboxB = GTK_BOX(gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0));
-  GtkLabel *labelB = GTK_LABEL(dt_ui_label_new(_("variance blue: ")));
-  gtk_box_pack_start(GTK_BOX(hboxB), GTK_WIDGET(labelB), FALSE, FALSE, 0);
+
   g->label_var_B = GTK_LABEL(dt_ui_label_new("")); // This gets filled in by process
   gtk_widget_set_tooltip_text(GTK_WIDGET(g->label_var_B),
                               _("variance computed on the blue channel"));
-  gtk_box_pack_start(GTK_BOX(hboxB), GTK_WIDGET(g->label_var_B), FALSE, FALSE, 0);
-  gtk_box_pack_start(GTK_BOX(g->box_variance), GTK_WIDGET(hboxB), TRUE, TRUE, 0);
+
+  g->box_variance = dt_gui_vbox(g->label_var,
+                                dt_gui_hbox(dt_ui_label_new(_("variance red: ")), g->label_var_R),
+                                dt_gui_hbox(dt_ui_label_new(_("variance green: ")), g->label_var_G),
+                                dt_gui_hbox(dt_ui_label_new(_("variance blue: ")), g->label_var_B));
 
   g_signal_connect(G_OBJECT(g->box_variance), "draw",
                    G_CALLBACK(denoiseprofile_draw_variance), self);
 
   // start building top level widget
-  self->widget = gtk_box_new(GTK_ORIENTATION_VERTICAL, DT_BAUHAUS_SPACE);
 
   g->profile = dt_bauhaus_combobox_new(self);
   dt_bauhaus_widget_set_label(g->profile, NULL, N_("profile"));
   g_signal_connect(G_OBJECT(g->profile), "value-changed",
                    G_CALLBACK(profile_callback), self);
-  gtk_box_pack_start(GTK_BOX(self->widget), g->profile, TRUE, TRUE, 0);
+  self->widget = dt_gui_vbox(g->profile);
 
+  g->compensate_hilite_pres = dt_bauhaus_toggle_from_params(self, "compensate_hilite_pres");
   g->wb_adaptive_anscombe = dt_bauhaus_toggle_from_params(self, "wb_adaptive_anscombe");
 
   g->mode = dt_bauhaus_combobox_from_params(self, N_("mode"));
@@ -3774,8 +3690,7 @@ void gui_init(dt_iop_module_t *self)
   if(!compute_variance && pos != -1)
     dt_bauhaus_combobox_remove_at(g->mode, pos);
 
-  gtk_box_pack_start(GTK_BOX(self->widget), g->box_nlm, TRUE, TRUE, 0);
-  gtk_box_pack_start(GTK_BOX(self->widget), g->box_wavelets, TRUE, TRUE, 0);
+  dt_gui_box_add(self->widget, g->box_nlm, g->box_wavelets);
 
   g->overshooting = dt_bauhaus_slider_from_params(self, "overshooting");
   dt_bauhaus_slider_set_soft_max(g->overshooting, 4.0f);
@@ -3786,7 +3701,7 @@ void gui_init(dt_iop_module_t *self)
   g->bias = dt_bauhaus_slider_from_params(self, "bias");
   dt_bauhaus_slider_set_soft_range(g->bias, -10.0f, 10.0f);
 
-  gtk_box_pack_start(GTK_BOX(self->widget), g->box_variance, TRUE, TRUE, 0);
+  dt_gui_box_add(self->widget, g->box_variance);
 
   g->fix_anscombe_and_nlmeans_norm = dt_bauhaus_toggle_from_params
     (self, "fix_anscombe_and_nlmeans_norm");
@@ -3800,6 +3715,10 @@ void gui_init(dt_iop_module_t *self)
                                 "for better denoising.\n"
                                 "should be disabled if an earlier instance\n"
                                 "has been used with a color blending mode."));
+  gtk_widget_set_tooltip_text(g->compensate_hilite_pres, _("if enabled, reduces the ISO used for denoise\n"
+                                                           "by the factor of the camera's hidden exposure\n"
+                                                           "bias used in HDR / highlight preservation /\n"
+                                                           "dynamic range / HLG tone modes."));
   gtk_widget_set_tooltip_text(g->fix_anscombe_and_nlmeans_norm,
                               _("fix bugs in Anscombe transform resulting\n"
                                 "in undersmoothing of the green channel in\n"
@@ -3870,8 +3789,6 @@ void gui_cleanup(dt_iop_module_t *self)
   g_list_free_full(g->profiles, dt_noiseprofile_free);
   dt_draw_curve_destroy(g->transition_curve);
   // nothing else necessary, gtk will clean up the slider.
-
-  IOP_GUI_FREE;
 }
 
 // clang-format off

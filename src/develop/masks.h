@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2013-2024 darktable developers.
+    Copyright (C) 2013-2026 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -29,9 +29,7 @@
 
 #define DEVELOP_MASKS_VERSION (6)
 
-#ifdef __cplusplus
-extern "C" {
-#endif /* __cplusplus */
+G_BEGIN_DECLS
 
 /**forms types */
 typedef enum dt_masks_type_t
@@ -44,7 +42,10 @@ typedef enum dt_masks_type_t
   DT_MASKS_GRADIENT = 1 << 4,
   DT_MASKS_ELLIPSE = 1 << 5,
   DT_MASKS_BRUSH = 1 << 6,
-  DT_MASKS_NON_CLONE = 1 << 7
+  DT_MASKS_NON_CLONE = 1 << 7,
+#ifdef HAVE_AI
+  DT_MASKS_OBJECT = 1 << 8,
+#endif
 } dt_masks_type_t;
 
 /**masts states */
@@ -75,6 +76,9 @@ typedef enum dt_masks_property_t
   DT_MASKS_PROPERTY_ROTATION,
   DT_MASKS_PROPERTY_CURVATURE,
   DT_MASKS_PROPERTY_COMPRESSION,
+  DT_MASKS_PROPERTY_CLEANUP,
+  DT_MASKS_PROPERTY_SMOOTHING,
+  DT_MASKS_PROPERTY_REFINE,
   DT_MASKS_PROPERTY_LAST
 } dt_masks_property_t;
 
@@ -155,6 +159,15 @@ typedef struct dt_masks_point_ellipse_t
   float border;
   dt_masks_ellipse_flags_t flags;
 } dt_masks_point_ellipse_t;
+
+#ifdef HAVE_AI
+/** structure used to store 1 point for an object (AI segmentation) form */
+typedef struct dt_masks_point_object_t
+{
+  float anchor[2]; // click position (normalized image coords)
+  int label;       // 1 = foreground, 0 = background
+} dt_masks_point_object_t;
+#endif
 
 /** structure used to store 1 point for a path form */
 typedef struct dt_masks_point_path_t
@@ -389,6 +402,7 @@ typedef struct dt_masks_form_gui_t
   gboolean border_selected;
   gboolean source_selected;
   gboolean pivot_selected;
+  gboolean select_only_border;
   dt_masks_edit_mode_t edit_mode;
   int point_selected;
   int point_edited;
@@ -428,6 +442,10 @@ typedef struct dt_masks_form_gui_t
   // ids
   dt_mask_id_t formid;
   dt_hash_t pipe_hash;
+
+  // opaque per-type data (e.g. segmentation context for object masks)
+  void *scratchpad;
+  void (*scratchpad_cleanup)(struct dt_masks_form_gui_t *gui);
 } dt_masks_form_gui_t;
 
 /** special value to indicate an invalid or uninitialized coordinate */
@@ -441,6 +459,11 @@ extern const dt_masks_functions_t dt_masks_functions_brush;
 extern const dt_masks_functions_t dt_masks_functions_path;
 extern const dt_masks_functions_t dt_masks_functions_gradient;
 extern const dt_masks_functions_t dt_masks_functions_group;
+#ifdef HAVE_AI
+extern const dt_masks_functions_t dt_masks_functions_object;
+/** check if AI object mask model is downloaded and AI is enabled */
+gboolean dt_masks_object_available(void);
+#endif
 
 /** init dt_masks_form_gui_t struct with default values */
 void dt_masks_init_form_gui(dt_masks_form_gui_t *gui);
@@ -454,11 +477,11 @@ int dt_masks_get_points_border(dt_develop_t *dev,
                                float **border,
                                int *border_count,
                                const int source,
-                               dt_iop_module_t *module);
+                               const dt_iop_module_t *module);
 
 /** get the rectangle which include the form and his border */
-int dt_masks_get_area(dt_iop_module_t *module,
-                      dt_dev_pixelpipe_iop_t *piece,
+int dt_masks_get_area(const dt_iop_module_t *module,
+                      const dt_dev_pixelpipe_iop_t *piece,
                       dt_masks_form_t *form,
                       int *width,
                       int *height,
@@ -481,7 +504,7 @@ static inline int dt_masks_get_mask(const dt_iop_module_t *const module,
                                     int *posx,
                                     int *posy)
 {
-  return form->functions
+  return (form->functions && form->functions->get_mask)
     ? form->functions->get_mask(module, piece, form, buffer, width, height, posx, posy)
     : 0;
 }
@@ -492,7 +515,7 @@ static inline int dt_masks_get_mask_roi(const dt_iop_module_t *const module,
                                         const dt_iop_roi_t *roi,
                                         float *buffer)
 {
-  return form->functions
+  return (form->functions && form->functions->get_mask_roi)
     ? form->functions->get_mask_roi(module, piece, form, roi, buffer)
     : 0;
 }
@@ -536,20 +559,23 @@ void dt_masks_replace_current_forms(dt_develop_t *dev, GList *forms);
 /** returns a form with formid == id from a list of forms */
 dt_masks_form_t *dt_masks_get_from_id_ext(GList *forms, dt_mask_id_t id);
 /** returns a form with formid == id from dev->forms */
-dt_masks_form_t *dt_masks_get_from_id(dt_develop_t *dev, dt_mask_id_t id);
+dt_masks_form_t *dt_masks_get_from_id(const dt_develop_t *dev, dt_mask_id_t id);
+/** register forms into the mask manager */
+void dt_masks_register_forms(dt_develop_t *dev,
+                             GList *forms);
 
 /** read the forms from the db */
 void dt_masks_read_masks_history(dt_develop_t *dev, const dt_imgid_t imgid);
 /** write the forms into the db */
 void dt_masks_write_masks_history_item(const dt_imgid_t imgid,
                                        const int num,
-                                       dt_masks_form_t *form);
+                                       const dt_masks_form_t *form);
 void dt_masks_free_form(dt_masks_form_t *form);
 void dt_masks_cleanup_unused(dt_develop_t *dev);
 
 /** function used to manipulate forms for masks */
 void dt_masks_change_form_gui(dt_masks_form_t *newform);
-void dt_masks_clear_form_gui(dt_develop_t *dev);
+void dt_masks_clear_form_gui(const dt_develop_t *dev);
 void dt_masks_reset_form_gui(void);
 void dt_masks_reset_show_masks_icons(void);
 
@@ -577,7 +603,7 @@ gboolean dt_masks_events_mouse_scrolled(struct dt_iop_module_t *module,
                                         const float y,
                                         const gboolean up,
                                         const uint32_t state);
-void dt_masks_events_post_expose(struct dt_iop_module_t *module,
+void dt_masks_events_post_expose(const struct dt_iop_module_t *module,
                                  cairo_t *cr,
                                  const int32_t width,
                                  const int32_t height,
@@ -591,13 +617,13 @@ gboolean dt_masks_events_mouse_enter(struct dt_iop_module_t *module);
 void dt_masks_gui_form_create(dt_masks_form_t *form,
                               dt_masks_form_gui_t *gui,
                               const int index,
-                              struct dt_iop_module_t *module);
+                              const struct dt_iop_module_t *module);
 void dt_masks_gui_form_remove(dt_masks_form_t *form,
                               dt_masks_form_gui_t *gui,
                               const int index);
 void dt_masks_gui_form_test_create(dt_masks_form_t *form,
                                    dt_masks_form_gui_t *gui,
-                                   struct dt_iop_module_t *module);
+                                   const struct dt_iop_module_t *module);
 void dt_masks_gui_form_save_creation(dt_develop_t *dev,
                                      struct dt_iop_module_t *module,
                                      dt_masks_form_t *form,
@@ -605,13 +631,14 @@ void dt_masks_gui_form_save_creation(dt_develop_t *dev,
 void dt_masks_group_ungroup(dt_masks_form_t *dest_grp, dt_masks_form_t *grp);
 void dt_masks_group_update_name(dt_iop_module_t *module);
 dt_masks_point_group_t *dt_masks_group_add_form(dt_masks_form_t *grp,
-                                                dt_masks_form_t *form);
+                                                const dt_masks_form_t *form);
 
 void dt_masks_iop_edit_toggle_callback(GtkToggleButton *togglebutton,
                                        struct dt_iop_module_t *module);
 void dt_masks_iop_value_changed_callback(GtkWidget *widget,
                                          struct dt_iop_module_t *module);
-dt_masks_edit_mode_t dt_masks_get_edit_mode(struct dt_iop_module_t *module);
+dt_masks_edit_mode_t dt_masks_get_edit_mode(void);
+gboolean dt_masks_is_restricted_mode(void);
 void dt_masks_set_edit_mode(struct dt_iop_module_t *module,
                             const dt_masks_edit_mode_t value);
 void dt_masks_set_edit_mode_single_form(struct dt_iop_module_t *module,
@@ -643,12 +670,12 @@ GList *dt_masks_dup_forms_deep(GList *forms, dt_masks_form_t *form);
 /** utils functions */
 gboolean dt_masks_point_in_form_exact(const float x,
                                       const float y,
-                                      float *points,
+                                      const float *points,
                                       const int points_start,
                                       const int points_count);
 gboolean dt_masks_point_in_form_near(const float x,
                                      const float y,
-                                     float *points,
+                                     const float *points,
                                      const int points_start,
                                      const int points_count,
                                      const float distance,
@@ -669,7 +696,7 @@ float dt_masks_change_rotation(const gboolean up,
 
 /** allow to select a shape inside an iop */
 void dt_masks_select_form(struct dt_iop_module_t *module,
-                          dt_masks_form_t *sel);
+                          const dt_masks_form_t *sel);
 
 /** utils for selecting the source of a clone mask while creating it */
 void dt_masks_draw_clone_source_pos(cairo_t *cr,
@@ -685,7 +712,7 @@ void dt_masks_set_source_pos_initial_value(dt_masks_form_gui_t *gui,
                                            dt_masks_form_t *form,
                                            const float pzx,
                                            const float pzy);
-void dt_masks_calculate_source_pos_value(dt_masks_form_gui_t *gui,
+void dt_masks_calculate_source_pos_value(const dt_masks_form_gui_t *gui,
                                          const int mask_type,
                                          const float initial_xpos,
                                          const float initial_ypos,
@@ -696,15 +723,23 @@ void dt_masks_calculate_source_pos_value(dt_masks_form_gui_t *gui,
                                          const int adding);
 
 /** detail mask support */
-gboolean dt_masks_calc_scharr_mask(dt_dev_detail_mask_t *details,
-                                   float *const src,
-                                   const dt_aligned_pixel_t wb);
+float *dt_masks_calc_scharr_mask(struct dt_dev_pixelpipe_t *pipe,
+                                 float *src,
+                                 const int width,
+                                 const int height,
+                                 const gboolean rawmode);
 float *dt_masks_calc_detail_mask(struct dt_dev_pixelpipe_iop_t *piece,
                                  const float threshold,
                                  const gboolean detail);
+void dt_masks_calc_detail_blend(float *const src,
+                                float *out,
+                                const size_t msize,
+                                const float threshold,
+                                const gboolean detail);
+
 
 /** return the list of possible mouse actions */
-GSList *dt_masks_mouse_actions(dt_masks_form_t *form);
+GSList *dt_masks_mouse_actions(const dt_masks_form_t *form);
 
 void dt_group_events_post_expose(cairo_t *cr,
                                  const float zoom_scale,
@@ -1132,20 +1167,47 @@ static inline float dt_masks_sensitive_dist(const float zoom_scale)
 }
 
 static inline void dt_masks_get_image_size(float *width,
-                                          float *height,
-                                          float *iwidth,
-                                          float *iheight)
+                                           float *height,
+                                           float *iwidth,
+                                           float *iheight)
 {
-  dt_dev_pixelpipe_t *preview = darktable.develop->preview_pipe;
-  if(width  ) *width   = preview->backbuf_width;
-  if(height ) *height  = preview->backbuf_height;
+  // iwidth/iheight must match preview->iwidth/iheight (= pipe->iwidth/iheight used
+  // by _path_get_pts_border to scale corner coordinates before distort_transform).
+  // width/height must match preview->processed_width/height, which is what both
+  // dt_dev_get_preview_size() and dt_view_paint_surface FALLBACK use as canvas size.
+  const dt_develop_t *dev = darktable.develop;
+  const dt_dev_pixelpipe_t *preview = dev->preview_pipe;
+  const float iscale = preview->iscale > 0.f ? preview->iscale : 1.f;
+
+  // Use preview pipe's actual processed dimensions, not full.pipe/iscale.
+  // The two differ by up to 1 pixel due to independent integer truncations
+  // in each pipeline (e.g. after crop), causing a systematic mask overlay shift.
+  // dt_dev_get_preview_size() uses the same value, so both are consistent.
+  if(preview->processed_width > 0)
+  {
+    if(width  ) *width   = preview->processed_width;
+    if(height ) *height  = preview->processed_height;
+  }
+  else if(dev->full.pipe && dev->full.pipe->processed_width > 0)
+  {
+    if(width  ) *width   = dev->full.pipe->processed_width  / iscale;
+    if(height ) *height  = dev->full.pipe->processed_height / iscale;
+  }
+  else
+  {
+    if(width  ) *width   = preview->backbuf_width;
+    if(height ) *height  = preview->backbuf_height;
+  }
+
+  // iwidth/iheight must equal pipe->iwidth/iheight (the pipeline input dimensions
+  // used to scale corners in _path_get_pts_border / other mask get_points_border
+  // functions), so that backtransform(corner * pipe->iwidth) / iwidth = corner.
   if(iwidth ) *iwidth  = preview->iwidth;
   if(iheight) *iheight = preview->iheight;
+
 }
 
-#ifdef __cplusplus
-} // extern "C"
-#endif /* __cplusplus */
+G_END_DECLS
 
 // clang-format off
 // modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py

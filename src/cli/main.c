@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2012-2023 darktable developers.
+    Copyright (C) 2012-2025 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -35,7 +35,6 @@
 #include "common/image.h"
 #include "common/image_cache.h"
 #include "common/points.h"
-#include "config.h"
 #include "control/conf.h"
 #include "develop/imageop.h"
 #include "imageio/imageio_common.h"
@@ -94,6 +93,8 @@ fprintf(stderr, "darktable %s\n"
                 "                          if specified, takes preference over output\n"
                 "   --import <file or dir> specify input file or dir, can be used'\n"
                 "                          multiple times instead of input file\n"
+                "   --library <path> read the history stack from library database\n"
+                "                    instead of XMP sidecar files\n"
                 "   --icc-type <type> specify icc type, default to NONE\n"
                 "                     use --help icc-type for list of supported types\n"
                 "   --icc-file <file> specify icc filename, default to NONE\n"
@@ -197,6 +198,18 @@ static dt_iop_color_intent_t get_icc_intent(const char* option)
 }
 #undef ICC_INTENT_FROM_STR
 
+static gboolean _inputs_have_xmp_sidecar(const GList* inputs)
+{
+  for(const GList *l = inputs; l; l = g_list_next(l))
+  {
+    char sidecar[PATH_MAX + 5];
+    snprintf(sidecar, sizeof(sidecar), "%s.xmp", (const gchar *)l->data);
+    if(!g_file_test(sidecar, G_FILE_TEST_EXISTS))
+      return FALSE;
+  }
+  return inputs != NULL;
+}
+
 int main(int argc, char *arg[])
 {
 #ifdef __APPLE__
@@ -217,6 +230,7 @@ int main(int argc, char *arg[])
   gchar *output_filename = NULL;
   gchar *output_ext = NULL;
   char *style = NULL;
+  char *library = NULL;
   int file_counter = 0;
   int width = 0, height = 0, bpp = 0;
   gboolean verbose = FALSE, high_quality = TRUE, upscale = FALSE,
@@ -366,6 +380,11 @@ int main(int argc, char *arg[])
         else
           fprintf(stderr, _("notice: input file or dir '%s' doesn't exist, skipping\n"), arg[k]);
       }
+      else if(!strcmp(arg[k], "--library") && argc > k + 1)
+      {
+        k++;
+        library = arg[k];
+      }
       else if(!strcmp(arg[k], "--icc-type") && argc > k + 1)
       {
         k++;
@@ -437,25 +456,48 @@ int main(int argc, char *arg[])
   char **m_arg = malloc(sizeof(char *) * (5 + argc - k + 1));
   m_arg[m_argc++] = "darktable-cli";
   m_arg[m_argc++] = "--library";
-  m_arg[m_argc++] = ":memory:";
+  m_arg[m_argc++] = library ? library : ":memory:";
   m_arg[m_argc++] = "--conf";
   m_arg[m_argc++] = "write_sidecar_files=never";
   for(; k < argc; k++) m_arg[m_argc++] = arg[k];
   m_arg[m_argc] = NULL;
 
-  if( (inputs && file_counter < 1) || (!inputs && file_counter < 2) || file_counter > 3)
+  gboolean args_error = FALSE;
+  if(inputs && file_counter < 1)
+  {
+    fprintf(stderr, _("error: output file or directory must be specified\n\n"));
+    args_error = TRUE;
+  }
+  else if(!inputs && file_counter < 2)
+  {
+    if(file_counter == 0)
+      fprintf(stderr, _("error: input file and output file must be specified\n\n"));
+    else
+      fprintf(stderr, _("error: output file or directory must be specified\n\n"));
+    args_error = TRUE;
+  }
+  else if(file_counter > 3)
+  {
+    fprintf(stderr, _("error: too many positional arguments\n\n"));
+    args_error = TRUE;
+  }
+  else if(inputs && file_counter == 3)
+  {
+    fprintf(stderr, _("error: input file and import opts specified! that's not supported!\n"));
+    args_error = TRUE;
+  }
+
+  if(args_error)
   {
     usage(arg[0]);
     free(m_arg);
-    if(output_filename)
-      g_free(output_filename);
-    if(output_ext)
-      g_free(output_ext);
-    if(inputs)
-      g_list_free_full(inputs, g_free);
+    g_free(output_filename);
+    g_free(output_ext);
+    g_list_free_full(inputs, g_free);
     exit(1);
   }
-  else if(inputs && file_counter == 1)
+
+  if(inputs && file_counter == 1)
   {
     //user specified inputs as options, and only dest is present
     if(output_filename)
@@ -472,18 +514,6 @@ int main(int argc, char *arg[])
     xmp_filename = input_filename;
     input_filename = NULL;
   }
-  else if(inputs && file_counter == 3)
-  {
-    fprintf(stderr, _("error: input file and import opts specified! that's not supported!\n"));
-    usage(arg[0]);
-    free(m_arg);
-    if(output_filename)
-      g_free(output_filename);
-    if(output_ext)
-      g_free(output_ext);
-    g_list_free_full(inputs, g_free);
-    exit(1);
-  }
   else if(file_counter == 2)
   {
     // assume no xmp file given
@@ -499,6 +529,11 @@ int main(int argc, char *arg[])
     inputs = g_list_prepend(inputs, g_strdup(input_filename));
     input_filename = NULL;
   }
+
+  // auto-detect XMP sidecar: darktable's import reads <input>.xmp automatically,
+  // so only check for existence to decide whether to suppress the "no XMP" notice.
+  if(!xmp_filename && !library && ! _inputs_have_xmp_sidecar(inputs))
+    fprintf(stderr, "%s\n", _("notice: no XMP sidecar file nor library path provided, using default settings for export"));
 
   if(g_file_test(output_filename, G_FILE_TEST_IS_DIR))
   {
@@ -548,15 +583,49 @@ int main(int argc, char *arg[])
 
     if(g_file_test(input, G_FILE_TEST_IS_DIR))
     {
-      const dt_filmid_t filmid = dt_film_import(input);
-      if(!filmid)
+      //const dt_filmid_t filmid = dt_film_import(input);
+      dt_film_t film;
+      dt_filmid_t filmid = dt_film_new(&film, input);
+      //if(!filmid)
+      if(!dt_is_valid_filmid(filmid))
       {
-        // one of inputs was a failure, no prob
         fprintf(stderr, _("error: can't open folder %s"), input);
         fprintf(stderr, "\n");
         continue;
       }
-      id_list = g_list_concat(id_list, dt_film_get_image_ids(filmid));
+      // Based on dt_pathlist_import_create in control/jobs/film_jobs.c
+      GDir *cdir = g_dir_open(input, 0, NULL);
+      if(cdir)
+      {
+        const gchar *fname;
+        while((fname = g_dir_read_name(cdir)) != NULL)
+        {
+          if(fname[0] == '.') continue;  // skip hidden files
+          gchar *fullname = g_build_filename(input, fname, NULL);
+          if(!g_file_test(fullname, G_FILE_TEST_IS_DIR) && dt_supported_image(fname))
+          {
+            // Import each supported image file directly
+            const dt_imgid_t imgid = dt_image_import(filmid, fullname, TRUE, FALSE);
+            if(dt_is_valid_imgid(imgid))
+            {
+              id_list = g_list_append(id_list, GINT_TO_POINTER(imgid));
+            }
+            else
+            {
+              fprintf(stderr, _("error: can't import file %s"), fullname);
+              fprintf(stderr, "\n");
+            }
+          }
+          g_free(fullname);
+        }
+        g_dir_close(cdir);
+      }
+      else
+      {
+        fprintf(stderr, _("error: can't read directory %s"), input);
+        fprintf(stderr, "\n");
+        continue;
+      }
     }
     else
     {
@@ -565,7 +634,7 @@ int main(int argc, char *arg[])
 
       gchar *directory = g_path_get_dirname(input);
       filmid = dt_film_new(&film, directory);
-      const dt_imgid_t id = dt_image_import(filmid, input, TRUE, TRUE);
+      const dt_imgid_t id = dt_image_import(filmid, input, TRUE, FALSE);
       g_free(directory);
       if(!dt_is_valid_imgid(id))
       {
@@ -600,8 +669,8 @@ int main(int argc, char *arg[])
     for(GList *iter = id_list; iter; iter = g_list_next(iter))
     {
       int id = GPOINTER_TO_INT(iter->data);
-      dt_image_t *image = dt_image_cache_get(darktable.image_cache, id, 'w');
-      if(dt_exif_xmp_read(image, xmp_filename, 1))
+      dt_image_t *image = dt_image_cache_get(id, 'w');
+      if(dt_exif_xmp_read(image, xmp_filename, FALSE))
       {
         fprintf(stderr, _("error: can't open XMP file %s"), xmp_filename);
         fprintf(stderr, "\n");
@@ -612,7 +681,7 @@ int main(int argc, char *arg[])
         exit(1);
       }
       // don't write new xmp:
-      dt_image_cache_write_release(darktable.image_cache, image, DT_IMAGE_CACHE_RELAXED);
+      dt_image_cache_write_release(image, DT_IMAGE_CACHE_RELAXED);
     }
   }
 
@@ -775,11 +844,22 @@ int main(int argc, char *arg[])
   for(GList *iter = id_list; iter; iter = g_list_next(iter), num++)
   {
     const int id = GPOINTER_TO_INT(iter->data);
-    // TODO: have a parameter in command line to get the export presets
     dt_export_metadata_t metadata;
-    metadata.flags = dt_lib_export_metadata_default_flags();
-    metadata.list = NULL;
-    if(storage->store(storage, sdata, id, format, fdata, num, total, high_quality, upscale, export_masks,
+    // TODO: have a parameter in command line to get the export presets
+    if(custom_presets)
+    {
+      metadata.flags = dt_lib_export_metadata_get_conf_flags();
+      metadata.list = dt_util_str_to_glist("\1", dt_lib_export_metadata_get_conf());
+      if(metadata.list)
+        metadata.list = g_list_remove(metadata.list, metadata.list->data);
+    }
+    else
+    {
+      metadata.flags = dt_lib_export_metadata_default_flags();
+      metadata.list = NULL;
+    }
+    if(storage->store(storage, sdata, id, format, fdata, num, total, high_quality,
+                      upscale, FALSE, 1.0, export_masks,
                       icc_type, icc_filename, icc_intent, &metadata) != 0)
       res = 1;
   }

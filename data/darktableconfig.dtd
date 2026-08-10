@@ -11,13 +11,14 @@
         title CDATA #REQUIRED
 >
 
-<!ELEMENT dtconfig (name,type,default,capability?,shortdescription?,longdescription?)>
+<!ELEMENT dtconfig (name,type,default,capability?,shortdescription?,longdescription?,welcomescreen?)>
 <!ATTLIST dtconfig
 	prefs IDREF #IMPLIED
         section IDREF #IMPLIED
         dialog (collect|recentcollect|import|tagging) #IMPLIED
         ui (yes|no) #IMPLIED
         restart (true|false) #IMPLIED
+        common (yes|no) #IMPLIED
         capability CDATA #IMPLIED
 >
 <!ELEMENT name (#PCDATA)>
@@ -35,3 +36,11 @@
 <!ELEMENT default (#PCDATA)>
 <!ELEMENT shortdescription (#PCDATA)>
 <!ELEMENT longdescription (#PCDATA)>
+
+<!ELEMENT welcomescreen EMPTY>
+<!ATTLIST welcomescreen
+        pagenum CDATA #IMPLIED
+        questionnum CDATA #IMPLIED
+        dirchooser (yes|no) #IMPLIED
+        options CDATA #IMPLIED
+>

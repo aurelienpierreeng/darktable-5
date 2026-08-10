@@ -16,9 +16,6 @@
     along with darktable.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-#ifdef HAVE_CONFIG_H
-#include "config.h"
-#endif
 #include "bauhaus/bauhaus.h"
 #include "common/darktable.h"
 #include "common/gaussian.h"
@@ -129,8 +126,7 @@ void tiling_callback(dt_iop_module_t *self,
   tiling->maxbuf = fmax(1.0f, (float)dt_gaussian_singlebuffer_size(width, height, channels)/basebuffer);
   tiling->overhead = 0;
   tiling->overlap = 2 * p->radius;
-  tiling->xalign = 1;
-  tiling->yalign = 1;
+  tiling->align = 1;
 }
 
 // fibonacci lattice to select surrounding pixels for different cases

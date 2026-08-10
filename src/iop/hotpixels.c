@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2011-2024 darktable developers.
+    Copyright (C) 2011-2026 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -16,9 +16,6 @@
     along with darktable.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-#ifdef HAVE_CONFIG_H
-#include "config.h"
-#endif
 #include "bauhaus/bauhaus.h"
 #include "common/imagebuf.h"
 #include "control/control.h"
@@ -71,7 +68,8 @@ const char *name()
 
 const char **description(dt_iop_module_t *self)
 {
-  return dt_iop_set_description(self, _("remove abnormally bright pixels by dampening them with neighbors"),
+  return dt_iop_set_description(self, _("remove abnormally bright pixels\n"
+                                        "by dampening them with neighbors"),
                                       _("corrective"),
                                       _("linear, raw, scene-referred"),
                                       _("reconstruction, raw"),
@@ -104,9 +102,10 @@ dt_iop_colorspace_type_t default_colorspace(dt_iop_module_t *self,
  * the maximum produces fewer artifacts when inadvertently replacing
  * non-hot pixels.
  * This is the Bayer sensor variant. */
-static int process_bayer(const dt_iop_hotpixels_data_t *data,
-                         const void *const ivoid, void *const ovoid,
-                         const dt_iop_roi_t *const roi_out)
+static int _process_bayer(const dt_iop_hotpixels_data_t *data,
+                          const void *const ivoid,
+                          void *const ovoid,
+                          const dt_iop_roi_t *const roi_out)
 {
   const float threshold = data->threshold;
   const float multiplier = data->multiplier;
@@ -159,11 +158,11 @@ static int process_bayer(const dt_iop_hotpixels_data_t *data,
 }
 
 /* This is the monochrome sensor variant. */
-static int process_monochrome(const dt_iop_hotpixels_data_t *data,
-                         const void *const ivoid,
-                         void *const ovoid,
-                         const dt_iop_roi_t *const roi_out,
-                         const int planes)
+static int _process_monochrome(const dt_iop_hotpixels_data_t *data,
+                              const void *const ivoid,
+                              void *const ovoid,
+                              const dt_iop_roi_t *const roi_out,
+                              const int planes)
 {
   const float threshold = data->threshold;
   const float multiplier = data->multiplier;
@@ -216,10 +215,12 @@ static int process_monochrome(const dt_iop_hotpixels_data_t *data,
   return fixed;
 }
 
-/* X-Trans sensor equivalent of process_bayer(). */
-static int process_xtrans(const dt_iop_hotpixels_data_t *data,
-                          const void *const ivoid, void *const ovoid,
-                          const dt_iop_roi_t *const roi_out, const uint8_t (*const xtrans)[6])
+/* X-Trans sensor equivalent of _process_bayer(). */
+static int _process_xtrans(const dt_iop_hotpixels_data_t *data,
+                           const void *const ivoid,
+                           void *const ovoid,
+                           const dt_iop_roi_t *const roi_out,
+                           const uint8_t (*const xtrans)[6])
 {
   // for each cell of sensor array, pre-calculate, a list of the x/y
   // offsets of the four radially nearest pixels of the same color
@@ -249,10 +250,10 @@ static int process_xtrans(const dt_iop_hotpixels_data_t *data,
   {
     for(int i = 0; i < 6; ++i)
     {
-      const uint8_t c = FCxtrans(j, i, roi_out, xtrans);
+      const uint8_t c = FCNxtrans(j, i, xtrans);
       for(int s = 0, found = 0; s < 20 && found < 4; ++s)
       {
-        if(c == FCxtrans(j + search[s][1], i + search[s][0], roi_out, xtrans))
+        if(c == FCNxtrans(j + search[s][1], i + search[s][0], xtrans))
         {
           offsets[j][i][found][0] = search[s][0];
           offsets[j][i][found][1] = search[s][1];
@@ -299,17 +300,17 @@ static int process_xtrans(const dt_iop_hotpixels_data_t *data,
           fixed++;
           if(markfixed)
           {
-            const uint8_t c = FCxtrans(row, col, roi_out, xtrans);
+            const uint8_t c = FCNxtrans(row, col, xtrans);
             for(int i = -2; i >= -10 && i >= -col; --i)
             {
-              if(c == FCxtrans(row, col+i, roi_out, xtrans))
+              if(c == FCNxtrans(row, col+i, xtrans))
               {
                 out[i] = *in;
               }
             }
             for(int i = 2; i <= 10 && i < width - col; ++i)
             {
-              if(c == FCxtrans(row, col+i, roi_out, xtrans))
+              if(c == FCNxtrans(row, col+i, xtrans))
               {
                 out[i] = *in;
               }
@@ -337,18 +338,18 @@ void process(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *c
 
   if(data->monochrome || data->pure_monochrome)
   {
-    fixed = process_monochrome(data, ivoid, ovoid, roi_out, planes);
+    fixed = _process_monochrome(data, ivoid, ovoid, roi_out, planes);
   }
   else if(piece->pipe->dsc.filters == 9u)
   {
-    fixed = process_xtrans(data, ivoid, ovoid, roi_out, (const uint8_t(*const)[6])piece->pipe->dsc.xtrans);
+    fixed = _process_xtrans(data, ivoid, ovoid, roi_out, piece->xtrans);
   }
   else
   {
-    fixed = process_bayer(data, ivoid, ovoid, roi_out);
+    fixed = _process_bayer(data, ivoid, ovoid, roi_out);
   }
 
-  if(g != NULL && self->dev->gui_attached && (piece->pipe->type & DT_DEV_PIXELPIPE_FULL))
+  if(g && self->dev->gui_attached && dt_pipe_is_full(piece->pipe))
   {
     g->pixels_fixed = fixed;
   }
@@ -373,7 +374,7 @@ void commit_params(dt_iop_module_t *self, dt_iop_params_t *params, dt_dev_pixelp
   d->multiplier = p->strength / 2.0;
   d->threshold = p->threshold;
   d->permissive = p->permissive;
-  d->markfixed = p->markfixed && (!(pipe->type & (DT_DEV_PIXELPIPE_EXPORT | DT_DEV_PIXELPIPE_THUMBNAIL)));
+  d->markfixed = p->markfixed && (!(dt_pipe_is_thumb(pipe) || dt_pipe_is_export(pipe)));
 
   const dt_image_t *img = &pipe->image;
   const gboolean monoraw = (img->flags & DT_IMAGE_S_RAW) && (img->flags & DT_IMAGE_MONOCHROME);
@@ -416,16 +417,16 @@ void gui_update(dt_iop_module_t *self)
 static gboolean draw(GtkWidget *widget, cairo_t *cr, dt_iop_module_t *self)
 {
   dt_iop_hotpixels_gui_data_t *g = self->gui_data;
-  if(darktable.gui->reset) return FALSE;
+  DT_GUARD_GUI_UPDATE(FALSE);
 
   if(g->pixels_fixed < 0) return FALSE;
 
   char *str = g_strdup_printf(ngettext("fixed %d pixel", "fixed %d pixels", g->pixels_fixed), g->pixels_fixed);
   g->pixels_fixed = -1;
 
-  ++darktable.gui->reset;
+  DT_ENTER_GUI_UPDATE();
   gtk_label_set_text(g->message, str);
-  --darktable.gui->reset;
+  DT_LEAVE_GUI_UPDATE();
 
   g_free(str);
 
@@ -438,7 +439,7 @@ void gui_init(dt_iop_module_t *self)
 
   g->pixels_fixed = -1;
 
-  GtkWidget *box_raw = self->widget = gtk_box_new(GTK_ORIENTATION_VERTICAL, DT_BAUHAUS_SPACE);
+  GtkWidget *box_raw = self->widget = dt_gui_vbox();
   g_signal_connect(G_OBJECT(box_raw), "draw", G_CALLBACK(draw), self);
 
   g->threshold = dt_bauhaus_slider_from_params(self, N_("threshold"));
@@ -453,11 +454,11 @@ void gui_init(dt_iop_module_t *self)
   g->permissive = GTK_TOGGLE_BUTTON(dt_bauhaus_toggle_from_params(self, "permissive"));
 
   // mark fixed pixels
-  GtkWidget *hbox = self->widget = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+  GtkWidget *hbox = self->widget = dt_gui_hbox();
   g->markfixed = GTK_TOGGLE_BUTTON(dt_bauhaus_toggle_from_params(self, "markfixed"));
   g->message = GTK_LABEL(gtk_label_new("")); // This gets filled in by process
-  gtk_box_pack_start(GTK_BOX(hbox), GTK_WIDGET(g->message), TRUE, TRUE, 0);
-  gtk_box_pack_start(GTK_BOX(box_raw), hbox, TRUE, TRUE, 0);
+  dt_gui_box_add(hbox, g->message);
+  dt_gui_box_add(box_raw, hbox);
 
   // start building top level widget
   self->widget = gtk_stack_new();

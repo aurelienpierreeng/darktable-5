@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2015-2024 darktable developers.
+    Copyright (C) 2015-2025 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -15,9 +15,6 @@
     You should have received a copy of the GNU General Public License
     along with darktable.  If not, see <http://www.gnu.org/licenses/>.
 */
-#ifdef HAVE_CONFIG_H
-#include "config.h"
-#endif
 #include "common/interpolation.h"
 #include "common/opencl.h"
 #include "common/imagebuf.h"
@@ -43,7 +40,8 @@ const char *name()
 int flags()
 {
   return IOP_FLAGS_ALLOW_TILING | IOP_FLAGS_HIDDEN | IOP_FLAGS_TILING_FULL_ROI
-    | IOP_FLAGS_ONE_INSTANCE | IOP_FLAGS_NO_HISTORY_STACK;
+    | IOP_FLAGS_ONE_INSTANCE | IOP_FLAGS_NO_HISTORY_STACK
+    | IOP_FLAGS_WRITE_PIPECACHE_IN;
 }
 
 int default_group()
@@ -60,10 +58,8 @@ dt_iop_colorspace_type_t default_colorspace(dt_iop_module_t *self,
 
 static inline gboolean _gui_fullpipe(dt_dev_pixelpipe_iop_t *piece)
 {
-  return piece->pipe->type & (DT_DEV_PIXELPIPE_FULL
-                              | DT_DEV_PIXELPIPE_PREVIEW2
-                              | DT_DEV_PIXELPIPE_IMAGE)
-    && darktable.develop->late_scaling.enabled;
+  return (dt_pipe_is_canvas(piece->pipe) || dt_pipe_is_image(piece->pipe))
+     && darktable.develop->late_scaling.enabled;
 }
 
 void modify_roi_in(dt_iop_module_t *self,
@@ -132,8 +128,7 @@ void tiling_callback(dt_iop_module_t *self,
   tiling->overhead = 0;
 
   tiling->overlap = 4;
-  tiling->xalign = 1;
-  tiling->yalign = 1;
+  tiling->align = 1;
 }
 
 void distort_mask(dt_iop_module_t *self,
@@ -143,9 +138,8 @@ void distort_mask(dt_iop_module_t *self,
                   const dt_iop_roi_t *const roi_in,
                   const dt_iop_roi_t *const roi_out)
 {
-  const struct dt_interpolation *itor =
-    dt_interpolation_new(DT_INTERPOLATION_USERPREF);
-  dt_interpolation_resample_1c(itor, out, roi_out, in, roi_in);
+  const dt_interpolation_t *itor = dt_interpolation_new(DT_INTERPOLATION_USERPREF);
+  dt_interpolation_resample_mask(itor, out, roi_out, in, roi_in);
 }
 
 #ifdef HAVE_OPENCL
@@ -163,7 +157,7 @@ int process_cl(dt_iop_module_t *self,
   }
 
   const int devid = piece->pipe->devid;
-  const gboolean exporting = piece->pipe->type == DT_DEV_PIXELPIPE_EXPORT;
+  const gboolean exporting = dt_pipe_is_export(piece->pipe);
 
   dt_print_pipe(DT_DEBUG_IMAGEIO,
                 exporting ? "clip_and_zoom_roi" : "clip_and_zoom",
@@ -182,7 +176,7 @@ void process(dt_iop_module_t *self,
              const dt_iop_roi_t *const roi_in,
              const dt_iop_roi_t *const roi_out)
 {
-  const gboolean exporting = piece->pipe->type == DT_DEV_PIXELPIPE_EXPORT;
+  const gboolean exporting = dt_pipe_is_export(piece->pipe);
   dt_print_pipe(DT_DEBUG_IMAGEIO,
                 exporting ? "clip_and_zoom_roi" : "clip_and_zoom",
                 piece->pipe, self, DT_DEVICE_CPU, roi_in, roi_out);
@@ -190,7 +184,7 @@ void process(dt_iop_module_t *self,
   if(exporting)
     dt_iop_clip_and_zoom_roi((float *)ovoid, (float *)ivoid, roi_out, roi_in);
   else
-    dt_iop_clip_and_zoom((float *)ovoid, (float *)ivoid, roi_out, roi_in);
+    dt_iop_clip_and_zoom((float *)ovoid, (float *)ivoid, roi_out, roi_in, FALSE);
 }
 
 void commit_params(dt_iop_module_t *self,
@@ -198,9 +192,8 @@ void commit_params(dt_iop_module_t *self,
                    dt_dev_pixelpipe_t *pipe,
                    dt_dev_pixelpipe_iop_t *piece)
 {
-  const int use_finalscale = DT_DEV_PIXELPIPE_IMAGE | DT_DEV_PIXELPIPE_IMAGE_FINAL;
-  piece->enabled = piece->pipe->type == DT_DEV_PIXELPIPE_EXPORT
-                  || (pipe->type & use_finalscale) == use_finalscale
+  piece->enabled = dt_pipe_is_export(piece->pipe)
+                  || (dt_pipe_is_image(pipe) && dt_pipe_is_image_final(pipe))
                   || _gui_fullpipe(piece);
 }
 
@@ -227,14 +220,6 @@ void init(dt_iop_module_t *self)
   self->hide_enable_button = TRUE;
   self->params_size = sizeof(dt_iop_finalscale_params_t);
   self->gui_data = NULL;
-}
-
-void cleanup(dt_iop_module_t *self)
-{
-  free(self->params);
-  self->params = NULL;
-  free(self->default_params);
-  self->default_params = NULL;
 }
 
 // clang-format off

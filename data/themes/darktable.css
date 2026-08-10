@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    copyright (c) 2022 darktable developers.
+    copyright (c) 2022-2026 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -140,11 +140,11 @@ Why that? Just because it's a developer choice and most classes use underscore i
 @define-color collapsible_bg_color @grey_25;
 
 /* Modules controls (sliders and comboboxes) */
-@define-color bauhaus_bg alpha(@bg_color, 0.55);
+@define-color bauhaus_bg shade(@plugin_bg_color,0.75);
+@define-color bauhaus_fill shade(@plugin_label_color,0.95);
 @define-color bauhaus_fg @fg_color;       /* needed to correctly display color pickers in all states, even if they inherit @fg_color by default */
 @define-color bauhaus_border shade(@plugin_bg_color, 0.5);
 @define-color bauhaus_indicator_border @grey_20;
-@define-color bauhaus_fill @grey_40;
 @define-color bauhaus_bg_hover @grey_60;
 @define-color bauhaus_fg_hover @grey_90;
 @define-color bauhaus_fg_selected @grey_80;
@@ -341,7 +341,7 @@ undershoot,
 /* Allow to resize all windows */
 decoration
 {
-  margin: 1px; /* need to remains as px as just minimum size needed, no need to be scalable */
+  margin: 5px; /* need to remains as px as just minimum size needed, no need to be scalable */
 }
 
 /* Default Gtk buttons and other entries */
@@ -366,6 +366,12 @@ spinbutton button,
 textview
 {
   background-color: alpha(@fg_color, 0.09);
+  margin: 0.07em 0.4em 0.07em 0.07em;
+}
+
+window entry,
+dialog entry
+{
   margin: 0.07em;
 }
 
@@ -407,6 +413,12 @@ header button,
 .dt_ignore_fg_state:checked
 {
   color: @button_fg;
+}
+
+/* iop on/off buton */
+.dt_module_btn.dt_transparent_background:first-child
+{
+  color: shade(@disabled_fg_color, 0.9);
 }
 
 spinbutton > button,
@@ -509,6 +521,12 @@ separator
 {
   min-height: 1.7em;
   min-width: 1.7em;
+  border: 0.08em solid transparent;
+}
+
+#footer-toolbar button:checked
+{
+   border: 0.08em solid shade(@button_border, 1.6);
 }
 
 /* Rating stars on left footer toolbar on lighttable view */
@@ -584,8 +602,23 @@ dialog .sidebar row:selected:hover label,
 /* Set modules name header */
 #module-header
 {
-  border-bottom: 1px solid @plugin_bg_color;
+  border-bottom: 1px solid shade(@plugin_bg_color, 1.05);
   padding: 0.5em;
+}
+
+#iop-expander.dt_module_active #module-header
+{
+  /* ACTIVE */
+}
+
+#iop-expander.dt_module_focus #module-header
+{
+  /* FOCUSED */
+}
+
+#iop-expander.dt_module_active.dt_module_focus #module-header
+{
+  /* FOCUSED AND ACTIVE */
 }
 
 /* Labels in modules */
@@ -600,7 +633,8 @@ dialog .sidebar row:selected:hover label,
 }
 
 #snapshot-button entry,
-#iop-module-name
+#iop-module-name,
+#lib-module-name
 {
   font-weight: lighter;
   font-family: sans-serif, "Arial Unicode MS";
@@ -656,12 +690,21 @@ dialog .sidebar row:selected:hover label,
   background-color: shade(@collapsible_bg_color, 1.04);
 }
 
+.dt_section_expander
+{
+  padding: 0.07em 0 0.07em 1.7em;
+}
+
 .dt_section_expander,
 .dt_section_expander label
 {
   background-color: @collapsible_bg_color;
   border: none;
   margin-top: 0.14em;
+}
+
+.dt_section_expander label
+{
   padding: 0.07em 0;
 }
 
@@ -748,7 +791,8 @@ dialog .dialog-vbox
 /* set top margin in bottom button bar to be the same as bottom margin applied above for main dialog window */
 dialog .dialog-action-box,
 #shortcut-controls,
-#preset-controls
+#preset-controls,
+#ai-controls
 {
   margin-top: 0.42em;
 }
@@ -840,6 +884,13 @@ menuitem check:selected
   padding-right: 0.42em;
 }
 
+/* ??? workaround a wayland issue where the sub-menu in the presets
+   closing when close to the right border of the screen. */
+menuitem *
+{
+    padding: .05em;
+}
+
 /* fix for menuitem in bottom toolbar mainly */
 menuitem > arrow
 {
@@ -849,7 +900,7 @@ menuitem > arrow
 /* then spacing around bauhaus widgets */
 .dt_bauhaus
 {
-  margin: 0.14em 0;
+  margin: 0.2em 0;
 }
 
 /* and set menuitem related to sort of combobox like metadata presets in import module */
@@ -1066,10 +1117,28 @@ treeview header label
 }
 
 /*-------------------------------------
+  - 2nd darkroom window options       -
+  -------------------------------------*/
+
+#dt_window2_pin_button {
+  background-color: @button_bg;
+  border: 0.08em solid transparent;
+}
+
+#dt_window2_pin_button:hover {
+  background-color: alpha(@button_hover_bg, 0.5);
+  border-color: transparent;
+}
+
+#dt_window2_pin_button:checked {
+  border: 0.08em solid @button_fg;
+}
+
+/*-------------------------------------
   - Preferences dialog window options -
   -------------------------------------*/
-#preferences-content,
-#preferences-content .dialog-action-box,
+#preferences-box,
+#preferences-box .dialog-action-box,
 #quick-presets-manager box  /* set same setting on quick preset manager dialog window ; accessible to bottom left button on footer bar in darkroom view */
 {
   margin: 0; /* reset default dialog margin to main items. And needed to have an hover and selected effect on all width of categories in sidebar */
@@ -1605,10 +1674,15 @@ progressbar progress
 }
 
 /* deactivated switch buttons, make them less visible */
-.dt_history_switch_off,
-.dt_history_switch_off:disabled
+.dt_history_switch_off
 {
   color: @disabled_fg_color;
+}
+
+/* history on/off button */
+.dt_history_switch_off:disabled
+{
+  color: shade(@disabled_fg_color, 0.9);
 }
 
 #dt-metadata-changed
@@ -1799,6 +1873,7 @@ treeview#delete-dialog:selected
 }
 
   /* set active menu items: needed for some Pango issues not rendering synthetic bold for all OS */
+.active_menu_item,
 .active_menu_item label
 {
   font-weight: bold;
@@ -1908,16 +1983,24 @@ Details :
   border: 1px solid @lighttable_bg_color;
 }
 
+/* set hover effect */
+.dt_act_on_selection #thumb-main:active #thumb-back,
+.dt_act_on_selection #thumb-main:selected #thumb-back
+{
+  background-color: @thumbnail_hover_bg_color;
+}
+
 /* set selected image and/or focus one */
-#thumb-main:active #thumb-back,
-#thumb-main:selected #thumb-back
+.dt_act_on_hover #thumb-main:active #thumb-back,
+.dt_act_on_hover #thumb-main:selected #thumb-back,
+.dt_act_on_selection #thumb-main:hover #thumb-back
 {
   background-color: shade(@thumbnail_selected_bg_color, 1.05);
   border-color: shade(@thumbnail_selected_bg_color, 1.15);
 }
 
 /* set hover effect */
-#thumb-main:hover #thumb-back
+.dt_act_on_hover #thumb-main:hover #thumb-back
 {
   background-color: @thumbnail_hover_bg_color;
 }
@@ -2278,7 +2361,8 @@ Details :
   border: 0.14em solid @plugin_bg_color;
 }
 
-.dt_fullview #thumb-main:hover #thumb-image
+.dt_fullview.dt_act_on_hover #thumb-main:hover #thumb-image,
+.dt_fullview.dt_act_on_selection .dt_culling_selected#thumb-main #thumb-image
 {
   border: 0.14em solid @thumbnail_hover_bg_color;
 }
@@ -2322,71 +2406,159 @@ Details :
   margin: 0.07em 0.28em;
 }
 
+/* workspace selection dialog */
+#workspace
+{
+    background-color: @grey_20;
+    padding: 0.8em;
+    margin: 0.5em;
+}
+
+#wpdialog
+{
+    background-color: #852A2A;
+}
+
+#workspace .dt_module_btn
+{
+    background-color: #852A2A;
+}
+
+#workspace label
+{
+    font-size: 120%;
+    padding: .2em;
+    padding-top: 1em;
+}
+
+#workspace button label
+{
+    font-size: 100%;
+    padding: 0.3em;
+    margin: 0em;
+}
+
+/* check row: do not inherit #workspace label padding-top (keeps indicator vertically centered with text) */
+#workspace checkbutton label
+{
+    padding-top: 0.2em;
+}
+
+#workspace .dt_workspace_template_radio_cell
+{
+    min-width: 1.25em;
+    min-height: 1.55em;
+    padding: 0.1em 0;
+    margin: 0.06em 0.14em 0.06em 0;
+    background-color: @grey_25;
+    border: none;
+    border-radius: 5px;
+}
+
+#workspace .dt_workspace_template_radio_cell:hover
+{
+    background-color: @grey_30;
+}
+
+#workspace .dt_workspace_template_radio_cell.dt_workspace_template_radio_on
+{
+    background-color: alpha(@grey_85, 0.15);
+}
+
+#workspace .dt_workspace_template_radio
+{
+    background-color: transparent;
+    border: none;
+    box-shadow: none;
+    padding: 0;
+    margin: 0;
+    min-width: 0;
+    min-height: 0;
+}
+
+/* workspace dialog: template radios are icon-only; enlarge indicator slightly */
+#workspace .dt_workspace_template_radio check,
+#workspace .dt_workspace_template_radio radio
+{
+    min-width: 1.28em;
+    min-height: 1.28em;
+}
+
 /* splash screen */
 #splashscreen
 {
-    background-color: @grey_10;
-    border: 5px solid @grey_60;
+    background-color: @grey_20;
+    border: 1px solid;
+    border-radius: 0;
+    min-width: 720px;
 }
-#splashscreen-header
-{
-    padding: 0;
-    margin: 0;
-}
-/* make the (nonexistent) title text very small to avoid an obvious bar at top */
-#splashscreen-header label
-{
-    font-size: 1%;
-    padding: 0;
-    margin: 0;
-}
-/* style the darktable logo */
+
 #splashscreen-logo
 {
+    margin-left: 30px;
+    margin-top: 30px;
+    margin-right: 25px;
+    min-width: 120px;
+    min-height: 120px;
 }
-/* position the darktable version number next to the logo */
-#splashscreen-version
-{
-    margin-top: -35pt;
-    margin-right: -110pt;
-    font-size: 15pt;
-}
-/* style the darktable program name */
+
+/* darktable wordmark */
 #splashscreen-program
 {
-    font-size: 48pt;
-    margin: 2pt;
+  font-size: 50pt;
+  margin-top: 25pt;
+  margin-bottom: 0;
 }
-/* style the darktable program description */
+
+/* version number */
+#splashscreen-version
+{
+  color: @grey_50;
+  font-size: 22pt;
+  margin-top: 0;
+}
+
+/* tagline below logo */
 #splashscreen-description
 {
-    font-size: 16pt;
-    font-family: DejaVu Serif, serif;
-    padding: 1em;
-    margin: 1em;
+  color: @grey_60;
+  font-size: 18pt;
+  font-family: Inter, sans-serif;
+  margin-top: 30pt;
+  margin-bottom: 30pt;
+  margin-left: 30pt;
 }
-/* style the "get ready" message */
-#splashscreen-prepare
-{
-    font-size: 14pt;
-    font-family: DejaVu Serif, serif;
-}
-/* style the separating bar - without a style, it won't appear or take space! */
+
+/* horizontal line */
 #splashscreen-separator
 {
-    border: 2px solid @grey_80;
-    margin-top: 15pt;
-    margin-bottom: 15pt;
+    background-color: @grey_40;
+    min-height: 1px;
+    border: none;
+    margin-top: 10pt;
+    margin-bottom: 10pt;
+    margin-left:10px;
+    margin-right:10px;
 }
-/* style the progress message */
+
+/* progress label */
 #splashscreen-progress
 {
+    color: @grey_70;
+    font-size: 12pt;
+    font-family: Inter, sans-serif;
+    background-color: transparent;
+    margin-left: 30pt;
+    margin-top: 10pt;
+    margin-bottom: 2em;
 }
-/* style the time remaining */
+
+/* time remaining */
 #splashscreen-remaining
 {
-    color: yellow;
-    font-size: 150%;
+    color: @grey_60;
+    font-size: 10pt;
+    padding-bottom: 1em;
 }
 
 /* style the message on the exit screen */
@@ -2394,6 +2566,40 @@ Details :
 {
     font-size: 15pt;
     margin-bottom: 10pt;
+}
+
+/* welcome screen */
+#welcome-page
+{
+    padding: 16px;
+}
+
+#welcome-page > box
+{
+    margin-top: 4px;
+    margin-bottom: 4px;
+}
+
+#welcome-page > box > box
+{
+    margin-top: 4px;
+    margin-bottom: 4px;
+}
+
+#welcome-paragraph
+{
+  margin-top: 1em;
+  margin-bottom: 1em;
+}
+
+#welcome-footer
+{
+    padding: 8px;
+}
+
+#welcome-prev,
+#welcome-next {
+  margin-right: .2em;
 }
 
 /* ??? TO BE REMOVED ON DT 5.0 : script_manager power button */
@@ -2408,4 +2614,81 @@ button#pb_on
 label#pb_label
 {
   padding-left: .5em;
+}
+
+/* the following line are for the Wayland headerbar, this does nothing on non
+   wayland were we let the WM decorate the window by himself. */
+window headerbar
+{
+    background-color: @border_color;
+    color: #ffffff;             /* Text color */
+    min-height: 0;              /* Minimum height */
+    padding: 0;                 /* Padding around content */
+}
+
+window headerbar.title
+{
+    font-weight: bold;
+    font-size: 16px;
+}
+
+dialog headerbar button,
+window headerbar button.titlebutton
+{
+    border-radius: 999px;           /* Makes the button round */
+    padding: 3px;                   /* Size of the button */
+    background-color: shade(@border_color, 1.1);
+    color: white;
+    border: none;
+    margin: 8px;                    /* Spaces around button */
+}
+
+#tag-completion box
+{
+  background-color: @tooltip_bg_color;
+  border : 1px solid @button_border;
+}
+
+/* the popover entry */
+popover *
+{
+  background-color: @tooltip_bg_color;
+  color: @tooltip_fg_color;
+}
+
+/* the popover completion list */
+#tag-completion *:selected
+{
+  background-color: @selected_bg_color;
+}
+
+/* log history popover */
+popover#log-history-popover scrolledwindow
+{
+  background-color: @bg_color;
+  border: none;
+}
+
+popover#log-history-popover row
+{
+  padding: 0;
+}
+
+popover#log-history-popover label
+{
+  color: @fg_color;
+}
+
+#log-history-popover overshoot,
+#log-history-popover undershoot
+{
+  all: unset;
+}
+
+/* badge for log history button */
+#log-history-badge
+{
+  color: @fg_color;
+  margin-top: 2px;
+  margin-right: 2px;
 }

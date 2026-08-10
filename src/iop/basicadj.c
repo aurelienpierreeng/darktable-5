@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2019-2024 darktable developers.
+    Copyright (C) 2019-2026 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -19,10 +19,6 @@
 /*
     auto exposure is based on RawTherapee's Auto Levels
 */
-
-#ifdef HAVE_CONFIG_H
-#include "config.h"
-#endif
 
 #include "bauhaus/bauhaus.h"
 #include "common/colorspaces_inline_conversions.h"
@@ -220,7 +216,7 @@ static void _color_picker_callback(GtkWidget *button, dt_iop_module_t *self)
 
 static void _auto_levels_callback(GtkButton *button, dt_iop_module_t *self)
 {
-  if(darktable.gui->reset) return;
+  DT_GUARD_GUI_UPDATE();
 
   dt_iop_basicadj_gui_data_t *g = self->gui_data;
 
@@ -246,7 +242,7 @@ static void _auto_levels_callback(GtkButton *button, dt_iop_module_t *self)
 
 static void _select_region_toggled_callback(GtkToggleButton *togglebutton, dt_iop_module_t *self)
 {
-  if(darktable.gui->reset) return;
+  DT_GUARD_GUI_UPDATE();
 
   dt_iop_basicadj_gui_data_t *g = self->gui_data;
 
@@ -294,11 +290,11 @@ static void _develop_ui_pipe_finished_callback(gpointer instance, dt_iop_module_
     g->call_auto_exposure = 0;
     dt_iop_gui_leave_critical_section(self);
 
-    ++darktable.gui->reset;
+    DT_ENTER_GUI_UPDATE();
 
     gui_update(self);
 
-    --darktable.gui->reset;
+    DT_LEAVE_GUI_UPDATE();
   }
   else
   {
@@ -326,11 +322,11 @@ static void _signal_profile_user_changed(gpointer instance, uint8_t profile_type
 
       if(g)
       {
-        ++darktable.gui->reset;
+        DT_ENTER_GUI_UPDATE();
 
         dt_bauhaus_slider_set_default(g->sl_middle_grey, def_middle_grey);
 
-        --darktable.gui->reset;
+        DT_LEAVE_GUI_UPDATE();
       }
     }
   }
@@ -411,13 +407,13 @@ int button_pressed(dt_iop_module_t *self,
   dt_iop_basicadj_gui_data_t *g = self->gui_data;
   if(g && g->draw_selected_region && self->enabled)
   {
-    if((which == 3) || (which == 1 && type == GDK_2BUTTON_PRESS))
+    if((which == GDK_BUTTON_SECONDARY) || (which == GDK_BUTTON_PRIMARY && type == GDK_2BUTTON_PRESS))
     {
       _turn_selregion_picker_off(self);
 
       handled = 1;
     }
-    else if(which == 1)
+    else if(which == GDK_BUTTON_PRIMARY)
     {
       float wd, ht;
       dt_dev_get_preview_size(self->dev, &wd, &ht);
@@ -486,7 +482,7 @@ void cleanup_global(dt_iop_module_so_t *self)
 void color_picker_apply(dt_iop_module_t *self, GtkWidget *picker,
                         dt_dev_pixelpipe_t *pipe)
 {
-  if(darktable.gui->reset) return;
+  DT_GUARD_GUI_UPDATE();
   dt_iop_basicadj_params_t *p = self->params;
   dt_iop_basicadj_gui_data_t *g = self->gui_data;
 
@@ -499,9 +495,9 @@ void color_picker_apply(dt_iop_module_t *self, GtkWidget *picker,
                                                                        work_profile->nonlinearlut) * 100.f)
                                   : dt_camera_rgb_luminance(self->picked_color);
 
-  ++darktable.gui->reset;
+  DT_ENTER_GUI_UPDATE();
   dt_bauhaus_slider_set(g->sl_middle_grey, p->middle_grey);
-  --darktable.gui->reset;
+  DT_LEAVE_GUI_UPDATE();
 
   dt_dev_add_history_item(darktable.develop, self, TRUE);
 }
@@ -541,8 +537,7 @@ void tiling_callback(dt_iop_module_t *self,
   tiling->maxbuf_cl = 1.0f;
   tiling->overhead = 0;
   tiling->overlap = 0;
-  tiling->xalign = 1;
-  tiling->yalign = 1;
+  tiling->align = 1;
 }
 void commit_params(dt_iop_module_t *self,
                    dt_iop_params_t *params,
@@ -615,8 +610,6 @@ void gui_init(dt_iop_module_t *self)
 
   change_image(self);
 
-  self->widget = GTK_WIDGET(gtk_box_new(GTK_ORIENTATION_VERTICAL, DT_BAUHAUS_SPACE));
-
   g->sl_black_point = dt_bauhaus_slider_from_params(self, "black_point");
   dt_bauhaus_slider_set_soft_range(g->sl_black_point, -0.1, 0.1);
   dt_bauhaus_slider_set_digits(g->sl_black_point, 4);
@@ -657,11 +650,8 @@ void gui_init(dt_iop_module_t *self)
   g->sl_vibrance = dt_bauhaus_slider_from_params(self, N_("vibrance"));
   gtk_widget_set_tooltip_text(g->sl_vibrance, _("vibrance adjustment"));
 
-  GtkWidget *autolevels_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, DT_PIXEL_APPLY_DPI(10));
-
   g->bt_auto_levels = dt_action_button_new(NULL, N_("auto"), _auto_levels_callback, self, _("apply auto exposure based on the entire image"), 0, 0);
   gtk_widget_set_size_request(g->bt_auto_levels, -1, DT_PIXEL_APPLY_DPI(24));
-  gtk_box_pack_start(GTK_BOX(autolevels_box), g->bt_auto_levels, TRUE, TRUE, 0);
 
   g->bt_select_region = dtgtk_togglebutton_new(dtgtk_cairo_paint_colorpicker, 0, NULL);
   dt_gui_add_class(g->bt_select_region, "dt_transparent_background");
@@ -670,26 +660,17 @@ void gui_init(dt_iop_module_t *self)
                                 "click and drag to draw the area\n"
                                 "right-click to cancel"));
   g_signal_connect(G_OBJECT(g->bt_select_region), "toggled", G_CALLBACK(_select_region_toggled_callback), self);
-  gtk_box_pack_start(GTK_BOX(autolevels_box), g->bt_select_region, TRUE, TRUE, 0);
 
-  gtk_box_pack_start(GTK_BOX(self->widget), autolevels_box, TRUE, TRUE, 0);
+  dt_gui_box_add(self->widget, dt_gui_expand(g->bt_auto_levels), dt_gui_expand(g->bt_select_region));
 
   g->sl_clip = dt_bauhaus_slider_from_params(self, N_("clip"));
   dt_bauhaus_slider_set_digits(g->sl_clip, 3);
   gtk_widget_set_tooltip_text(g->sl_clip, _("adjusts clipping value for auto exposure calculation"));
 
   // add signal handler for preview pipe finish
-  DT_CONTROL_SIGNAL_CONNECT(DT_SIGNAL_DEVELOP_PREVIEW_PIPE_FINISHED, _develop_ui_pipe_finished_callback, self);
+  DT_CONTROL_SIGNAL_HANDLE(DT_SIGNAL_DEVELOP_PREVIEW_PIPE_FINISHED, _develop_ui_pipe_finished_callback);
   // and profile change
-  DT_CONTROL_SIGNAL_CONNECT(DT_SIGNAL_CONTROL_PROFILE_USER_CHANGED, _signal_profile_user_changed, self);
-}
-
-void gui_cleanup(dt_iop_module_t *self)
-{
-  DT_CONTROL_SIGNAL_DISCONNECT(_develop_ui_pipe_finished_callback, self);
-  DT_CONTROL_SIGNAL_DISCONNECT(_signal_profile_user_changed, self);
-
-  IOP_GUI_FREE;
+  DT_CONTROL_SIGNAL_HANDLE(DT_SIGNAL_CONTROL_PROFILE_USER_CHANGED, _signal_profile_user_changed);
 }
 
 static inline int64_t doubleToRawLongBits(double d)
@@ -1077,16 +1058,16 @@ static void _get_auto_exp(const uint32_t *const histogram, const unsigned int hi
   // compute exposure compensation as geometric mean of the amount that
   // sets the mean or median at middle gray, and the amount that sets the estimated top
   // of the histogram at or near clipping.
-  const float expcomp1 = (logf(midgray * scale / (ave - shc + midgray * shc))) / DT_M_LN2f;
+  const float expcomp1 = (logf(midgray * scale / (ave - shc + midgray * shc))) / M_LN2f;
   float expcomp2;
 
   if(overex == 0) // image is not overexposed
   {
-    expcomp2 = 0.5f * ((15.5f - histcompr - (2.f * oct7 - oct6)) + logf(scale / rawmax) / DT_M_LN2f);
+    expcomp2 = 0.5f * ((15.5f - histcompr - (2.f * oct7 - oct6)) + logf(scale / rawmax) / M_LN2f);
   }
   else
   {
-    expcomp2 = 0.5f * ((15.5f - histcompr - (2.f * octile[7] - octile[6])) + logf(scale / rawmax) / DT_M_LN2f);
+    expcomp2 = 0.5f * ((15.5f - histcompr - (2.f * octile[7] - octile[6])) + logf(scale / rawmax) / M_LN2f);
   }
 
   if(fabsf(expcomp1) - fabsf(expcomp2) > 1.f) // for great expcomp
@@ -1098,7 +1079,7 @@ static void _get_auto_exp(const uint32_t *const histogram, const unsigned int hi
     expcomp = 0.5 * (double)expcomp1 + 0.5 * (double)expcomp2; // for small expcomp
   }
 
-  const float gain = expf(expcomp * DT_M_LN2f);
+  const float gain = expf(expcomp * M_LN2f);
 
   const float corr = sqrtf(gain * scale / rawmax);
   black = shc * corr;
@@ -1175,32 +1156,32 @@ cleanup:
   if(dt_isnan(expcomp))
   {
     expcomp = 0.f;
-    dt_print(DT_DEBUG_ALWAYS, "[_get_auto_exp] expcomp is NaN!!!");
+    dt_print(DT_DEBUG_ALWAYS, "[_get_auto_exp] expcomp is NaN!");
   }
   if(dt_isnan(black))
   {
     black = 0.f;
-    dt_print(DT_DEBUG_ALWAYS, "[_get_auto_exp] black is NaN!!!");
+    dt_print(DT_DEBUG_ALWAYS, "[_get_auto_exp] black is NaN!");
   }
   if(dt_isnan(bright))
   {
     bright = 0.f;
-    dt_print(DT_DEBUG_ALWAYS, "[_get_auto_exp] bright is NaN!!!");
+    dt_print(DT_DEBUG_ALWAYS, "[_get_auto_exp] bright is NaN!");
   }
   if(dt_isnan(contr))
   {
     contr = 0.f;
-    dt_print(DT_DEBUG_ALWAYS, "[_get_auto_exp] contr is NaN!!!");
+    dt_print(DT_DEBUG_ALWAYS, "[_get_auto_exp] contr is NaN!");
   }
   if(dt_isnan(hlcompr))
   {
     hlcompr = 0.f;
-    dt_print(DT_DEBUG_ALWAYS, "[_get_auto_exp] hlcompr is NaN!!!");
+    dt_print(DT_DEBUG_ALWAYS, "[_get_auto_exp] hlcompr is NaN!");
   }
   if(dt_isnan(hlcomprthresh))
   {
     hlcomprthresh = 0.f;
-    dt_print(DT_DEBUG_ALWAYS, "[_get_auto_exp] hlcomprthresh is NaN!!!");
+    dt_print(DT_DEBUG_ALWAYS, "[_get_auto_exp] hlcomprthresh is NaN!");
   }
 
   *_expcomp = expcomp;
@@ -1313,10 +1294,10 @@ int process_cl(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_mem dev_
   const int height = roi_in->height;
 
   // process auto levels
-  if(g && (piece->pipe->type & DT_DEV_PIXELPIPE_PREVIEW))
+  if(g && dt_pipe_is_preview(piece->pipe))
   {
     dt_iop_gui_enter_critical_section(self);
-    if(g->call_auto_exposure == 1 && !darktable.gui->reset)
+    if(g->call_auto_exposure == 1 && !DT_IN_GUI_UPDATE())
     {
       g->call_auto_exposure = -1;
       dt_iop_gui_leave_critical_section(self);
@@ -1330,7 +1311,7 @@ int process_cl(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_mem dev_
         goto cleanup;
       }
 
-      err = dt_opencl_copy_device_to_host(devid, src_buffer, dev_in, width, height, ch * sizeof(float));
+      err = dt_opencl_copy_image_to_host(devid, src_buffer, dev_in, width, height, ch * sizeof(float));
       if(err != CL_SUCCESS)
       {
         dt_print(DT_DEBUG_ALWAYS, "[basicadj process_cl] error allocating memory for color transformation 2");
@@ -1387,7 +1368,7 @@ int process_cl(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_mem dev_
                                             &dev_profile_info, &dev_profile_lut);
   if(err != CL_SUCCESS) goto cleanup;
 
-  dev_gamma = dt_opencl_copy_host_to_device(devid, d->lut_gamma, 256, 256, sizeof(float));
+  dev_gamma = dt_opencl_copy_host_to_image(devid, d->lut_gamma, 256, 256, sizeof(float));
   if(dev_gamma == NULL)
   {
     dt_print(DT_DEBUG_ALWAYS, "[basicadj process_cl] error allocating memory 3");
@@ -1395,7 +1376,7 @@ int process_cl(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_mem dev_
     goto cleanup;
   }
 
-  dev_contrast = dt_opencl_copy_host_to_device(devid, d->lut_contrast, 256, 256, sizeof(float));
+  dev_contrast = dt_opencl_copy_host_to_image(devid, d->lut_contrast, 256, 256, sizeof(float));
   if(dev_contrast == NULL)
   {
     dt_print(DT_DEBUG_ALWAYS, "[basicadj process_cl] error allocating memory 4");
@@ -1431,10 +1412,10 @@ void process(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *c
   dt_iop_basicadj_gui_data_t *g = self->gui_data;
 
   // process auto levels
-  if(g && (piece->pipe->type & DT_DEV_PIXELPIPE_PREVIEW))
+  if(g && dt_pipe_is_preview(piece->pipe))
   {
     dt_iop_gui_enter_critical_section(self);
-    if(g->call_auto_exposure == 1 && !darktable.gui->reset)
+    if(g->call_auto_exposure == 1 && !DT_IN_GUI_UPDATE())
     {
       g->call_auto_exposure = -1;
       dt_iop_gui_leave_critical_section(self);

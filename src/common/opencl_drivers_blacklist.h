@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2016-2020 darktable developers.
+    Copyright (C) 2016-2026 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -19,6 +19,7 @@
 #pragma once
 
 #include <string.h>
+#include <strings.h>
 
 // FIXME: in the future, we may want to also take DRIVER_VERSION into account
 static const gchar *bad_opencl_drivers[] =
@@ -26,16 +27,13 @@ static const gchar *bad_opencl_drivers[] =
   // clang-format off
 
   "beignet",
-  "pocl",
+  "clover",
+  "amd-app",
 /*
   Neo was originally blacklisted due to improper cache invalidation, but this has been fixed.
-  During the discussion of that issue in pull request 2033, it was hinted that Neo may be still be
-  problematic on Windows, so keep it blacklisted there for now
-
-  TODO:  Determine if Windows failures were due to the same cache invalidation issue.
+  Per Issue 20104, enabling neo for Windows.
 */
 #if defined _WIN32
-  "neo",
   "d3d12",
 #endif
   NULL
@@ -44,7 +42,7 @@ static const gchar *bad_opencl_drivers[] =
 };
 
 // returns TRUE if blacklisted
-gboolean dt_opencl_check_driver_blacklist(const char *device_version)
+static gboolean _opencl_check_driver_blacklist(const char *device_version)
 {
   gchar *device = g_ascii_strdown(device_version, -1);
 

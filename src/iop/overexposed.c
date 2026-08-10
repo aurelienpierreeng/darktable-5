@@ -16,9 +16,6 @@
     along with darktable.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-#ifdef HAVE_CONFIG_H
-#include "config.h"
-#endif
 #include <stdlib.h>
 #include <cairo.h>
 
@@ -382,8 +379,7 @@ void tiling_callback(dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece
   tiling->maxbuf_cl = 1.0f;
   tiling->overhead = 0;
   tiling->overlap = 0;
-  tiling->xalign = 1;
-  tiling->yalign = 1;
+  tiling->align = 1;
 }
 
 
@@ -407,8 +403,7 @@ void cleanup_global(dt_iop_module_so_t *self)
 void commit_params(dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pixelpipe_t *pipe,
                    dt_dev_pixelpipe_iop_t *piece)
 {
-  const gboolean fullpipe = piece->pipe->type & DT_DEV_PIXELPIPE_FULL;
-  piece->enabled = self->dev->overexposed.enabled && fullpipe && self->dev->gui_attached;
+  piece->enabled = self->dev->overexposed.enabled && dt_pipe_is_full(piece->pipe) && self->dev->gui_attached;
 }
 
 void init_pipe(dt_iop_module_t *self, dt_dev_pixelpipe_t *pipe, dt_dev_pixelpipe_iop_t *piece)

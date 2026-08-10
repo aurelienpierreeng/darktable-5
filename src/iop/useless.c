@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2010-2024 darktable developers.
+    Copyright (C) 2010-2026 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -15,9 +15,6 @@
     You should have received a copy of the GNU General Public License
     along with darktable.  If not, see <http://www.gnu.org/licenses/>.
 */
-#ifdef HAVE_CONFIG_H
-#include "config.h"
-#endif
 // our includes go first:
 #include "bauhaus/bauhaus.h"
 #include "develop/imageop.h"
@@ -267,8 +264,7 @@ void tiling_callback(dt_iop_module_t *self,
   tiling->overhead = 0;     // number of bytes of fixed overhead
   tiling->overlap = 0;      // how many pixels do we need to access
                             // from the neighboring tile?
-  tiling->xalign = 1;
-  tiling->yalign = 1;
+  tiling->align = 1;
 }
 #endif
 
@@ -370,8 +366,7 @@ void process(dt_iop_module_t *self,
 
   // we create a raster mask as an example
   float *mask = NULL;
-  if(piece->pipe->store_all_raster_masks
-     || dt_iop_is_raster_mask_used(piece->module, mask_id))
+  if(dt_iop_piece_is_raster_mask_used(piece, mask_id))
   {
     // Attempt to allocate all of the buffers we need.  For this
     // example, we need one buffer that is equal in dimensions to the
@@ -450,7 +445,7 @@ void init(dt_iop_module_t *self)
   dt_iop_default_init(self);
 
   // Any non-default settings; for example disabling the on/off switch:
-  module->hide_enable_button = TRUE;
+  self->hide_enable_button = TRUE;
   // To make this work correctly, you also need to hide the widgets,
   // otherwise moving one would enable the module anyway. The standard
   // way is to set up a gtk_stack and show the page that only has a
@@ -464,13 +459,10 @@ void init_global(dt_iop_module_so_t *self)
 
 void cleanup(dt_iop_module_t *self)
 {
+  dt_iop_default_cleanup(self);
   // Releases any memory allocated in init(module) Implement this
   // function explicitly if the module allocates additional memory
   // besides (default_)params.  this is rare.
-  free(self->params);
-  self->params = NULL;
-  free(self->default_params);
-  self->default_params = NULL;
 }
 
 void cleanup_global(dt_iop_module_so_t *self)
@@ -485,7 +477,7 @@ static void extra_callback(GtkWidget *w,
                            dt_iop_module_t *self)
 {
   // this is important to avoid cycles!
-  if(darktable.gui->reset) return;
+  DT_GUARD_GUI_UPDATE();
 
   dt_iop_useless_params_t *p = self->params;
   dt_iop_useless_gui_data_t *g = self->gui_data;
@@ -494,9 +486,9 @@ static void extra_callback(GtkWidget *w,
 
   // Setting a widget value will trigger a callback that will update params.
   // If this is not desirable (because it might result in a cycle) then use
-  // ++darktable.gui->reset;
+  // DT_ENTER_GUI_UPDATE();
   dt_bauhaus_slider_set(g->factor, p->factor + extra);
-  // and reverse with --darktable.gui->reset;
+  // and reverse with DT_LEAVE_GUI_UPDATE();
 
   // If any params updated directly, not via a callback, then
   // let core know of the changes
@@ -654,7 +646,7 @@ void gui_init(dt_iop_module_t *self)
   // If the first widget is created using a _from_params call,
   // self->widget does not have to be explicitly initialised, as a new
   // vertical box will be created automatically.
-  self->widget = gtk_box_new(GTK_ORIENTATION_VERTICAL, DT_BAUHAUS_SPACE);
+  self->widget = dt_gui_vbox();
 
   // Linking a slider to an integer will make it take only whole
   // numbers (step=1).  The new slider is added to self->widget
@@ -694,20 +686,14 @@ void gui_init(dt_iop_module_t *self)
   // "value-changed" signal.
   g->extra = dt_bauhaus_slider_new_with_range(self, -0.5, 0.5, 0, 0, 2);
   dt_bauhaus_widget_set_label(g->extra, NULL, N_("extra"));
-  gtk_box_pack_start(GTK_BOX(self->widget), GTK_WIDGET(g->extra), TRUE, TRUE, 0);
+  dt_gui_box_add(self->widget, g->extra);
   g_signal_connect(G_OBJECT(g->extra), "value-changed", G_CALLBACK(extra_callback), self);
 }
 
 void gui_cleanup(dt_iop_module_t *self)
 {
   // This only needs to be provided if gui_init allocates any memory
-  // or resources besides self->widget and gui_data_t. The default
-  // function (if an explicit one isn't provided here) takes care of
-  // gui_data_t (and gtk destroys the widget anyway). If you override
-  // the default, you have to do whatever you have to do, and also
-  // call IOP_GUI_FREE to clean up gui_data_t.
-
-  IOP_GUI_FREE;
+  // or resources besides self->widget and gui_data_t.
 }
 
 /** additional, optional callbacks to capture darkroom center events. */

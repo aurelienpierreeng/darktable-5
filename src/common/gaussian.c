@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2012-2024 darktable developers.
+    Copyright (C) 2012-2026 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -849,7 +849,7 @@ dt_gaussian_cl_t *dt_gaussian_init_cl(const int devid,
                                   .cellsize = channels * sizeof(float), .overhead = 0,
                                   .sizex = BLOCKSIZE, .sizey = BLOCKSIZE };
 
-  if(dt_opencl_local_buffer_opt(devid, kernel_gaussian_transpose, &locopt))
+  if(dt_opencl_local_buffer_opt(devid, kernel_gaussian_transpose, &locopt) == CL_SUCCESS)
     blocksize = MIN(locopt.sizex, locopt.sizey);
   else
     blocksize = 1;
@@ -927,17 +927,16 @@ cl_int dt_gaussian_blur_cl(dt_gaussian_cl_t *g, cl_mem dev_in, cl_mem dev_out)
   else
     return DT_OPENCL_PROCESS_CL;
 
-  size_t origin[] = { 0, 0, 0 };
-  size_t region[] = { width, height, 1 };
-  size_t local[] = { blocksize, blocksize, 1 };
-  size_t sizes[3];
+  size_t region[2] = { width, height };
+  size_t local[2] = { blocksize, blocksize };
+  size_t sizes[2];
 
   // compute gaussian parameters
   float a0, a1, a2, a3, b1, b2, coefp, coefn;
   _compute_gauss_params(g->sigma, g->order, &a0, &a1, &a2, &a3, &b1, &b2, &coefp, &coefn);
 
   // copy dev_in to intermediate buffer dev_temp1
-  err = dt_opencl_enqueue_copy_image_to_buffer(devid, dev_in, dev_temp1, origin, region, 0);
+  err = dt_opencl_enqueue_copy_image_to_buffer(devid, dev_in, dev_temp1, CLIMG_ORIGIN, region, 0);
   if(err != CL_SUCCESS) return err;
 
   // first blur step: column by column with dev_temp1 -> dev_temp2
@@ -951,10 +950,9 @@ cl_int dt_gaussian_blur_cl(dt_gaussian_cl_t *g, cl_mem dev_in, cl_mem dev_out)
   // intermediate step: transpose dev_temp2 -> dev_temp1
   sizes[0] = bwidth;
   sizes[1] = bheight;
-  sizes[2] = 1;
-  dt_opencl_set_kernel_args(devid, kernel_gaussian_transpose, 0, CLARG(dev_temp2), CLARG(dev_temp1),
+  err = dt_opencl_enqueue_kernel_2d_local_args(devid, kernel_gaussian_transpose, sizes, local,
+    CLARG(dev_temp2), CLARG(dev_temp1),
     CLARG(width), CLARG(height), CLARG(blocksize), CLLOCAL(bpp * blocksize * (blocksize + 1)));
-  err = dt_opencl_enqueue_kernel_2d_with_local(devid, kernel_gaussian_transpose, sizes, local);
   if(err != CL_SUCCESS)
     return err;
 
@@ -970,15 +968,14 @@ cl_int dt_gaussian_blur_cl(dt_gaussian_cl_t *g, cl_mem dev_in, cl_mem dev_out)
   // transpose back dev_temp2 -> dev_temp1
   sizes[0] = bheight;
   sizes[1] = bwidth;
-  sizes[2] = 1;
-  dt_opencl_set_kernel_args(devid, kernel_gaussian_transpose, 0, CLARG(dev_temp2), CLARG(dev_temp1),
+  err = dt_opencl_enqueue_kernel_2d_local_args(devid, kernel_gaussian_transpose, sizes, local,
+    CLARG(dev_temp2), CLARG(dev_temp1),
     CLARG(height), CLARG(width), CLARG(blocksize), CLLOCAL(bpp * blocksize * (blocksize + 1)));
-  err = dt_opencl_enqueue_kernel_2d_with_local(devid, kernel_gaussian_transpose, sizes, local);
   if(err != CL_SUCCESS)
     return err;
 
   // finally produce output in dev_out
-  return dt_opencl_enqueue_copy_buffer_to_image(devid, dev_temp1, dev_out, 0, origin, region);
+  return dt_opencl_enqueue_copy_buffer_to_image(devid, dev_temp1, dev_out, 0, CLIMG_ORIGIN, region);
 }
 
 cl_int dt_gaussian_blur_cl_buffer(dt_gaussian_cl_t *g, cl_mem dev_in, cl_mem dev_out)
@@ -1027,8 +1024,8 @@ cl_int dt_gaussian_blur_cl_buffer(dt_gaussian_cl_t *g, cl_mem dev_in, cl_mem dev
   else
     return  DT_OPENCL_PROCESS_CL;
 
-  size_t local[] = { blocksize, blocksize, 1 };
-  size_t sizes[3];
+  size_t local[2] = { blocksize, blocksize };
+  size_t sizes[2];
 
   // compute gaussian parameters
   float a0, a1, a2, a3, b1, b2, coefp, coefn;
@@ -1045,10 +1042,9 @@ cl_int dt_gaussian_blur_cl_buffer(dt_gaussian_cl_t *g, cl_mem dev_in, cl_mem dev
   // intermediate step: transpose dev_temp2 -> dev_temp1
   sizes[0] = bwidth;
   sizes[1] = bheight;
-  sizes[2] = 1;
-  dt_opencl_set_kernel_args(devid, kernel_gaussian_transpose, 0, CLARG(dev_temp2), CLARG(dev_temp1),
+  err = dt_opencl_enqueue_kernel_2d_local_args(devid, kernel_gaussian_transpose, sizes, local,
+    CLARG(dev_temp2), CLARG(dev_temp1),
     CLARG(width), CLARG(height), CLARG(blocksize), CLLOCAL(bpp * blocksize * (blocksize + 1)));
-  err = dt_opencl_enqueue_kernel_2d_with_local(devid, kernel_gaussian_transpose, sizes, local);
   if(err != CL_SUCCESS)
     return err;
 
@@ -1065,10 +1061,9 @@ cl_int dt_gaussian_blur_cl_buffer(dt_gaussian_cl_t *g, cl_mem dev_in, cl_mem dev
   // destination buffer
   sizes[0] = bheight;
   sizes[1] = bwidth;
-  sizes[2] = 1;
-  dt_opencl_set_kernel_args(devid, kernel_gaussian_transpose, 0, CLARG(dev_temp2), CLARG(dev_out),
+  return dt_opencl_enqueue_kernel_2d_local_args(devid, kernel_gaussian_transpose, sizes, local,
+    CLARG(dev_temp2), CLARG(dev_out),
     CLARG(height), CLARG(width), CLARG(blocksize), CLLOCAL(bpp * blocksize * (blocksize + 1)));
-  return dt_opencl_enqueue_kernel_2d_with_local(devid, kernel_gaussian_transpose, sizes, local);
 }
 
 cl_int dt_gaussian_fast_blur_cl_buffer(const int devid,

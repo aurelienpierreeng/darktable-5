@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2011-2024 darktable developers.
+    Copyright (C) 2011-2026 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -16,9 +16,6 @@
     along with darktable.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-#ifdef HAVE_CONFIG_H
-#include "config.h"
-#endif
 #include "control/conf.h"
 #include "control/control.h"
 #include "common/imagebuf.h"
@@ -335,7 +332,7 @@ static gboolean _add_shape_callback(GtkWidget *widget,
                                     GdkEventButton *e,
                                     dt_iop_module_t *self)
 {
-  if(darktable.gui->reset) return FALSE;
+  DT_GUARD_GUI_UPDATE(FALSE);
 
   const dt_iop_spots_gui_data_t *g = self->gui_data;
 
@@ -357,7 +354,7 @@ static gboolean _edit_masks(GtkWidget *widget,
                             GdkEventButton *e,
                             dt_iop_module_t *self)
 {
-  if(darktable.gui->reset) return FALSE;
+  DT_GUARD_GUI_UPDATE(FALSE);
 
   // if we don't have the focus, request for it and quit, gui_focus() do the rest
   if(darktable.develop->gui_module != self)
@@ -384,7 +381,7 @@ static gboolean _edit_masks(GtkWidget *widget,
   gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g->bt_circle), FALSE);
   gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g->bt_ellipse), FALSE);
 
-  ++darktable.gui->reset;
+  DT_ENTER_GUI_UPDATE();
 
   dt_iop_color_picker_reset(self, TRUE);
 
@@ -408,7 +405,7 @@ static gboolean _edit_masks(GtkWidget *widget,
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(g->bt_edit_masks), FALSE);
   }
 
-  --darktable.gui->reset;
+  DT_LEAVE_GUI_UPDATE();
 
   dt_control_queue_redraw_center();
 
@@ -865,37 +862,31 @@ void gui_init(dt_iop_module_t *self)
 {
   dt_iop_spots_gui_data_t *g = IOP_GUI_ALLOC(spots);
 
-  self->widget = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-
-  GtkWidget *hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
-  gtk_box_pack_start(GTK_BOX(hbox), dt_ui_label_new(_("number of strokes:")),
-                     FALSE, TRUE, 0);
   g->label = GTK_LABEL(dt_ui_label_new("-1"));
-  gtk_widget_set_tooltip_text(hbox,
+  self->widget = dt_gui_hbox(dt_ui_label_new(_("number of strokes:")), g->label);
+
+  gtk_widget_set_tooltip_text(self->widget,
                               _("click on a shape and drag on canvas.\nuse the mouse wheel "
                                 "to adjust size.\nright-click to remove a shape."));
 
   g->bt_edit_masks = dt_iop_togglebutton_new(self, NULL, N_("show and edit shapes"), NULL,
                                              G_CALLBACK(_edit_masks), TRUE, 0, 0,
-                                             dtgtk_cairo_paint_masks_eye, hbox);
+                                             dtgtk_cairo_paint_masks_eye, self->widget);
 
   g->bt_path = dt_iop_togglebutton_new(self, N_("shapes"),
                                        N_("add path"), N_("add multiple paths"),
                                        G_CALLBACK(_add_shape_callback), TRUE, 0, 0,
-                                       dtgtk_cairo_paint_masks_path, hbox);
+                                       dtgtk_cairo_paint_masks_path, self->widget);
 
   g->bt_ellipse = dt_iop_togglebutton_new(self, N_("shapes"),
                                           N_("add ellipse"), N_("add multiple ellipses"),
                                           G_CALLBACK(_add_shape_callback), TRUE, 0, 0,
-                                          dtgtk_cairo_paint_masks_ellipse, hbox);
+                                          dtgtk_cairo_paint_masks_ellipse, self->widget);
 
   g->bt_circle = dt_iop_togglebutton_new(self, N_("shapes"),
                                          N_("add circle"), N_("add multiple circles"),
                                          G_CALLBACK(_add_shape_callback), TRUE, 0, 0,
-                                         dtgtk_cairo_paint_masks_circle, hbox);
-
-  gtk_box_pack_start(GTK_BOX(hbox), GTK_WIDGET(g->label), FALSE, TRUE, 0);
-  gtk_box_pack_start(GTK_BOX(self->widget), hbox, TRUE, TRUE, 0);
+                                         dtgtk_cairo_paint_masks_circle, self->widget);
 }
 
 void gui_reset(dt_iop_module_t *self)

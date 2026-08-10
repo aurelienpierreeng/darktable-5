@@ -1,4 +1,13 @@
 add_subdirectory(external)
+if(USE_AI)
+  find_package(ONNXRuntime QUIET)
+  if(NOT ONNXRuntime_FOUND)
+    message(FATAL_ERROR "ONNX Runtime not found")
+  endif()
+endif()
+if(USE_AI)
+  add_subdirectory(ai)
+endif(USE_AI)
 
 include(CheckCSourceCompiles)
 include(CheckCXXSymbolExists)
@@ -29,6 +38,7 @@ FILE(GLOB SOURCE_FILES
   "common/database.c"
   "common/datetime.c"
   "common/dbus.c"
+  "common/densecrf.cc"
   "common/distance_transform.c"
   "common/dlopencl.c"
   "common/dng_opcode.c"
@@ -70,9 +80,11 @@ FILE(GLOB SOURCE_FILES
   "common/opencl.c"
   "common/overlay.c"
   "common/pdf.c"
+  "common/pfm.c"
   "common/presets.c"
   "common/pwstorage/backend_kwallet.c"
   "common/pwstorage/pwstorage.c"
+  "common/ras2vect.c"
   "common/ratings.c"
   "common/resource_limits.c"
   "common/selection.c"
@@ -125,6 +137,7 @@ FILE(GLOB SOURCE_FILES
   "dtgtk/gradientslider.c"
   "dtgtk/icon.c"
   "dtgtk/paint.c"
+  "dtgtk/paint_cell.c"
   "dtgtk/range.c"
   "dtgtk/resetlabel.c"
   "dtgtk/sidepanel.c"
@@ -136,16 +149,20 @@ FILE(GLOB SOURCE_FILES
   "gui/about.c"
   "gui/accelerators.c"
   "gui/color_picker_proxy.c"
+  "gui/workspace.c"
   "gui/gtk.c"
   "gui/gtkentry.c"
   "gui/guides.c"
   "gui/hist_dialog.c"
   "gui/import_metadata.c"
+  "gui/metadata_tags.c"
   "gui/preferences.c"
   "gui/presets.c"
   "gui/splash.c"
+  "gui/welcome.c"
   "gui/styles_dialog.c"
   "imageio/imageio.c"
+  "imageio/imageio_dng.c"
   "imageio/imageio_jpeg.c"
   "imageio/imageio_module.c"
   "imageio/imageio_pfm.c"
@@ -165,6 +182,7 @@ if(APPLE)
   list(APPEND HEADER_FILES "osx/osx.h")
   list(APPEND SOURCE_FILES "common/pwstorage/backend_apple_keychain.c")
   list(APPEND HEADER_FILES "common/pwstorage/backend_apple_keychain.h")
+  list(APPEND SOURCE_FILES "main.c")
   include(CheckLanguage)
   check_language(OBJCXX)
   if(CMAKE_OBJCXX_COMPILER)
@@ -303,6 +321,10 @@ include_directories(SYSTEM ${LIBXML2_INCLUDE_DIR})
 list(APPEND LIBS ${LIBXML2_LIBRARIES})
 add_definitions(${LIBXML2_DEFINITIONS})
 
+# Check for potrace
+find_package(Potrace REQUIRED)
+list(APPEND LIBS ${POTRACE_LIBRARY})
+
 if(USE_CAMERA_SUPPORT)
   find_package(Gphoto2 2.5)
   if(Gphoto2_FOUND)
@@ -434,6 +456,33 @@ foreach(lib ${OUR_LIBS} GIO GThread GModule PangoCairo Rsvg2 PNG JPEG TIFF LCMS2
   add_definitions(${${lib}_DEFINITIONS})
 endforeach(lib)
 
+if(USE_AI)
+  option(USE_AI_DOWNLOAD "Enable downloading AI models from repository" ON)
+
+  list(APPEND LIBS darktable_ai)
+
+  FILE(GLOB SOURCE_FILES_AI
+    "common/ai_models.c"
+    "common/ai/segmentation.c"
+    "common/ai/restore.c"
+    "common/ai/restore_rgb.c"
+    "common/ai/restore_raw_bayer.c"
+    "common/ai/restore_raw_linear.c"
+    "develop/masks/object.c"
+    "gui/preferences_ai.c"
+  )
+  set(SOURCES ${SOURCES} ${SOURCE_FILES_AI})
+  add_definitions("-DHAVE_AI")
+  if(USE_AI_DOWNLOAD)
+    add_definitions("-DHAVE_AI_DOWNLOAD")
+    message(STATUS "AI features: enabled (with model download)")
+  else()
+    message(STATUS "AI features: enabled (without model download)")
+  endif()
+else(USE_AI)
+  message(STATUS "AI features: disabled")
+endif(USE_AI)
+
 if(PNG_VERSION_STRING VERSION_LESS 1.5)
   message(FATAL_ERROR "libpng version 1.5 or newer is required")
 endif()
@@ -441,6 +490,30 @@ endif()
 # Use imported target for curl
 find_package(CURL 7.56 REQUIRED)
 list(APPEND LIBS CURL::libcurl)
+
+if(USE_AI)
+  # libarchive for AI model ZIP extraction
+  # On macOS with Homebrew, libarchive is keg-only
+  if(APPLE)
+    execute_process(
+      COMMAND brew --prefix libarchive
+      OUTPUT_VARIABLE HOMEBREW_LIBARCHIVE_PREFIX
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+      ERROR_QUIET
+      RESULT_VARIABLE HOMEBREW_LIBARCHIVE_RESULT
+    )
+    if(HOMEBREW_LIBARCHIVE_RESULT EQUAL 0 AND EXISTS "${HOMEBREW_LIBARCHIVE_PREFIX}")
+      list(APPEND CMAKE_PREFIX_PATH "${HOMEBREW_LIBARCHIVE_PREFIX}")
+    endif()
+  endif()
+  find_package(LibArchive)
+  if(NOT LibArchive_FOUND)
+    message(FATAL_ERROR "libarchive not found")
+  else()
+    include_directories(SYSTEM ${LibArchive_INCLUDE_DIRS})
+    list(APPEND LIBS ${LibArchive_LIBRARIES})
+  endif()
+endif(USE_AI)
 
 # Require exiv2 >= 0.27.2 to make sure everything we need is available
 find_package(Exiv2 0.27.2 REQUIRED)
@@ -556,7 +629,7 @@ if(USE_GRAPHICSMAGICK)
   find_package(GraphicsMagick)
   if(GraphicsMagick_FOUND)
     add_definitions(-DHAVE_GRAPHICSMAGICK)
-    set(DT_SUPPORTED_EXTENSIONS ${DT_SUPPORTED_EXTENSIONS} bmp dcm fit fits fts gif jng jp2 jpc jpf jpx miff mng pam webp jxl CACHE INTERNAL "")
+    set(DT_SUPPORTED_EXTENSIONS ${DT_SUPPORTED_EXTENSIONS} bmp cin dcm dpx fit fits fts gif jng jp2 jpc jpf jpx miff mng pam webp jxl CACHE INTERNAL "")
     include_directories(SYSTEM ${GraphicsMagick_INCLUDE_DIRS})
     list(APPEND LIBS ${GraphicsMagick_LIBRARIES})
     list(APPEND SOURCES "imageio/imageio_gm.c")
@@ -580,7 +653,7 @@ if(USE_IMAGEMAGICK AND NOT GraphicsMagick_FOUND)
       list(APPEND LIBS ${ImageMagick_LIBRARY})
       unset(ImageMagick_LIBRARY CACHE)
     endforeach(lib)
-    set(DT_SUPPORTED_EXTENSIONS ${DT_SUPPORTED_EXTENSIONS} bmp dcm fit fits fts gif jng jp2 jpc jpf jpx miff mng pam webp jxl CACHE INTERNAL "")
+    set(DT_SUPPORTED_EXTENSIONS ${DT_SUPPORTED_EXTENSIONS} bmp cin dcm dpx fit fits fts gif jng jp2 jpc jpf jpx miff mng pam webp jxl CACHE INTERNAL "")
   endif(ImageMagick_FOUND)
 endif(USE_IMAGEMAGICK AND NOT GraphicsMagick_FOUND)
 
@@ -590,6 +663,8 @@ if(USE_GMIC)
     add_definitions(-DHAVE_GMIC)
     include_directories(SYSTEM ${GMIC_INCLUDE_DIRS})
     list(APPEND LIBS ${GMIC_LIBRARIES})
+  else()
+    message(FATAL_ERROR "No suitable GMIC development files found, please install them or disable GMIC support")
   endif(GMIC_FOUND)
 endif(USE_GMIC)
 
@@ -634,40 +709,23 @@ endif()
 
 
 if(NOT CUSTOM_CFLAGS)
-  if(BUILD_SSE2_CODEPATHS)
-    #we MUST always specify our required instruction set, native might not detect it
-    set(DT_REQ_INSTRUCTIONS "-msse2")
-  endif()
-
   include(march-mtune)
 
-  #if(NOT BUILD_SSE2_CODEPATHS)
-  #  set(MARCH "${MARCH} -mno-sse2 -D__DISABLE_SSE2__ -U__SSE2__ -D__DISABLE_SSE__ -U__SSE__")
-  #endif()
-
   #-g MUST be set for ALL builds, or there will be no support for them when bugs happen
-  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${MARCH} ${DT_REQ_INSTRUCTIONS} -g")
+  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${MARCH} -g")
   set(CMAKE_C_FLAGS_RELWITHDEBINFO "${CMAKE_C_FLAGS_RELWITHDEBINFO} -O2 -ftree-vectorize")
   set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -O3 -ffast-math -fno-finite-math-only")
-  if(CMAKE_COMPILER_IS_GNUCC)
-    if(BUILD_SSE2_CODEPATHS)
-      set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -mfpmath=sse")
-    endif()
-
+  if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
     set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -O0 -g3 -ggdb3")
     set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -fexpensive-optimizations")
   else()
     set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -O0")
   endif()
 
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${MARCH} ${DT_REQ_INSTRUCTIONS} -g")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${MARCH} -g")
   set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELWITHDEBINFO} -O2 -ftree-vectorize")
   set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3 -ffast-math -fno-finite-math-only")
-  if(CMAKE_COMPILER_IS_GNUCXX)
-    if(BUILD_SSE2_CODEPATHS)
-      set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mfpmath=sse")
-    endif()
-
+  if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -O0 -g3 -ggdb3")
     set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -fexpensive-optimizations")
   else()
@@ -709,8 +767,7 @@ if(USE_LUA)
     list(APPEND LIBS ${Lua54_LDFLAGS})
   else()
     if(DONT_USE_INTERNAL_LUA)
-      message(STATUS "Lua support: System library for lua 5.4 not found (to use darktable's version use -DDONT_USE_INTERNAL_LUA=Off)")
-      set(USE_LUA OFF)
+      message(FATAL_ERROR "Lua support: System library for Lua 5.4 not found (to use darktable's version add -DDONT_USE_INTERNAL_LUA=Off)")
     else(DONT_USE_INTERNAL_LUA)
       message(STATUS "Lua support: System library not found (using darktable's version)")
       include_directories(${CMAKE_CURRENT_SOURCE_DIR}/external/lua/src)
@@ -722,6 +779,7 @@ if(USE_LUA)
   if(USE_LUA)
     add_definitions("-DUSE_LUA")
     FILE(GLOB SOURCE_FILES_LUA
+      "lua/ai.c"
       "lua/cairo.c"
       "lua/call.c"
       "lua/configuration.c"
@@ -739,6 +797,7 @@ if(USE_LUA)
       "lua/lua.c"
       "lua/lualib.c"
       "lua/luastorage.c"
+      "lua/metadata.c"
       "lua/modules.c"
       "lua/password.c"
       "lua/preferences.c"
@@ -919,6 +978,23 @@ else(NOT ${Xsltproc_BIN} STREQUAL "Xsltproc_BIN-NOTFOUND")
   endif(NOT ${Saxon_BIN} STREQUAL "Saxon_BIN-NOTFOUND")
 endif(NOT ${Xsltproc_BIN} STREQUAL "Xsltproc_BIN-NOTFOUND")
 
+file(GLOB darktable_STYLES
+     "${DARKTABLE_DATADIR}/styles/*.dtstyle"
+)
+
+add_custom_command(
+  DEPENDS ${darktable_STYLES} ${CMAKE_SOURCE_DIR}/tools/generate_styles_string.sh
+  OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/styles_string.h
+  COMMAND bash ${CMAKE_SOURCE_DIR}/tools/generate_styles_string.sh ${DARKTABLE_DATADIR}/styles ${CMAKE_CURRENT_BINARY_DIR}/styles_string.h
+  COMMENT "Generating styles strings for translation"
+)
+
+add_custom_target(
+  generate_styles_string ALL
+  DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/styles_string.h
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
 add_custom_target(
   generate_preferences ALL
   DEPENDS ${CMAKE_SOURCE_DIR}/tools/generate_prefs.xsl ${CMAKE_SOURCE_DIR}/data/darktableconfig.dtd ${DARKTABLE_DATADIR}/darktableconfig.xml ${CMAKE_CURRENT_BINARY_DIR}/preferences_gen.h
@@ -942,6 +1018,7 @@ add_library(lib_darktable SHARED ${DARKTABLE_BINDIR}/preferences_gen.h ${DARKTAB
 # since this isn't the same directory we do have to manually set it
 set_source_files_properties(${DARKTABLE_BINDIR}/version_gen.c PROPERTIES GENERATED TRUE)
 
+add_dependencies(lib_darktable generate_styles_string)
 add_dependencies(lib_darktable generate_conf)
 add_dependencies(lib_darktable generate_version)
 add_dependencies(lib_darktable generate_preferences)
@@ -950,6 +1027,15 @@ add_dependencies(lib_darktable generate_authors_h)
 if(APPLE)
   set_target_properties(lib_darktable PROPERTIES MACOSX_RPATH TRUE)
 endif(APPLE)
+if(NOT WIN32)
+  # lib_darktable and ONNX Runtime are installed to the same directory
+  # (${CMAKE_INSTALL_LIBDIR}/darktable/) — set RPATH so the linker finds it
+  set_target_properties(lib_darktable PROPERTIES INSTALL_RPATH "${RPATH_ORIGIN}")
+endif()
+if(WIN32)
+  # Export all symbols on Windows so modules can access library functions
+  set_target_properties(lib_darktable PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS TRUE)
+endif(WIN32)
 set_target_properties(lib_darktable PROPERTIES OUTPUT_NAME darktable)
 set_target_properties(lib_darktable PROPERTIES LINKER_LANGUAGE C)
 

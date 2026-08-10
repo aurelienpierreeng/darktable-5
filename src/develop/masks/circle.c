@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2013-2024 darktable developers.
+    Copyright (C) 2013-2025 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -253,7 +253,7 @@ static int _circle_events_button_pressed(dt_iop_module_t *module,
       }
     }
   }
-  else if(which == 3)
+  else if(which == GDK_BUTTON_SECONDARY)
   {
     gui->creation_continuous = FALSE;
     gui->creation_continuous_module = NULL;
@@ -262,7 +262,7 @@ static int _circle_events_button_pressed(dt_iop_module_t *module,
     dt_control_queue_redraw_center();
     return 1;
   }
-  else if(which == 1
+  else if(which == GDK_BUTTON_PRIMARY
           && ((dt_modifier_is(state, GDK_CONTROL_MASK | GDK_SHIFT_MASK))
               || dt_modifier_is(state, GDK_SHIFT_MASK)))
   {
@@ -307,8 +307,8 @@ static int _circle_events_button_pressed(dt_iop_module_t *module,
       // and we switch in edit mode to show all the forms
       // spots and retouch have their own handling of creation_continuous
       if(gui->creation_continuous
-         && (dt_iop_module_is(crea_module->so, "spots")
-             || dt_iop_module_is(crea_module->so, "retouch")))
+         && (dt_iop_module_is(crea_module, "spots")
+             || dt_iop_module_is(crea_module, "retouch")))
         dt_masks_set_edit_mode_single_form(crea_module, form->formid, DT_MASKS_EDIT_FULL);
       else if(!gui->creation_continuous)
         dt_masks_set_edit_mode(crea_module, DT_MASKS_EDIT_FULL);
@@ -355,8 +355,8 @@ static int _circle_events_button_pressed(dt_iop_module_t *module,
     //spot and retouch manage creation_continuous in their own way
     if(gui->creation_continuous
        && (!crea_module
-           || (!dt_iop_module_is(crea_module->so, "spots")
-               && !dt_iop_module_is(crea_module->so, "retouch"))))
+           || (!dt_iop_module_is(crea_module, "spots")
+               && !dt_iop_module_is(crea_module, "retouch"))))
     {
       if(crea_module)
       {
@@ -398,7 +398,7 @@ static int _circle_events_button_released(dt_iop_module_t *module,
   float wd, ht, iwidth, iheight;
   dt_masks_get_image_size(&wd, &ht, &iwidth, &iheight);
 
-  if(which == 3
+  if(which == GDK_BUTTON_SECONDARY
      && dt_is_valid_maskid(parentid)
      && gui->edit_mode == DT_MASKS_EDIT_FULL)
   {
@@ -518,11 +518,10 @@ static int _circle_events_mouse_moved(dt_iop_module_t *module,
                                       dt_masks_form_gui_t *gui,
                                       const int index)
 {
-  float wd, ht, iwidth, iheight;
-  dt_masks_get_image_size(&wd, &ht, &iwidth, &iheight);
-
   if(gui->form_dragging || gui->source_dragging)
   {
+    float wd, ht, iwidth, iheight;
+    dt_masks_get_image_size(&wd, &ht, &iwidth, &iheight);
     float pts[2] = { pzx * wd + gui->dx, pzy * ht + gui->dy };
     dt_dev_distort_backtransform(darktable.develop, pts, 1);
 
@@ -577,6 +576,8 @@ static int _circle_events_mouse_moved(dt_iop_module_t *module,
   }
   else if(!gui->creation)
   {
+    float wd, ht, iwidth, iheight;
+    dt_masks_get_image_size(&wd, &ht, &iwidth, &iheight);
     const float as = dt_masks_sensitive_dist(zoom_scale);
     const float x = pzx * wd;
     const float y = pzy * ht;
@@ -621,15 +622,13 @@ static int _circle_events_mouse_moved(dt_iop_module_t *module,
       const float dist_b = sqf(x - gpt->border[2]) + sqf(y - gpt->border[3]);
       const float dist_p = sqf(x - gpt->points[2]) + sqf(y - gpt->points[3]);
 
-      // prefer border point over shape itself in case of near overlap
-      // for ease of pickup
-      if(dist_b < as2)
-      {
-        gui->point_border_selected = 1;
-      }
-      else if(dist_p < as2)
+      if(!gui->select_only_border && dist_p < as2)
       {
         gui->point_selected = 1;
+      }
+      else if(dist_b < as2)
+      {
+        gui->point_border_selected = 1;
       }
     }
 
@@ -677,7 +676,7 @@ static float *_points_to_transform(const float x,
 {
   // how many points do we need?
   const float r = radius * MIN(wd, ht);
-  const size_t l = MAX(10, (size_t)(2.0f * M_PI * r));
+  const size_t l = MAX(10, (size_t)(DT_2PI_F * r));
   // allocate buffer
   float *const restrict points = dt_alloc_align_float((l + 1) * 2);
   if(!points)
@@ -695,7 +694,7 @@ static float *_points_to_transform(const float x,
   DT_OMP_FOR_SIMD(if(l > 100) aligned(points:64))
   for(int i = 1; i < l + 1; i++)
   {
-    const float alpha = (i - 1) * 2.0f * M_PI / (float)l;
+    const float alpha = (i - 1) * DT_2PI_F / (float)l;
     points[i * 2] = center_x + r * cosf(alpha);
     points[i * 2 + 1] = center_y + r * sinf(alpha);
   }
@@ -1211,14 +1210,14 @@ static int _circle_get_mask_roi(const dt_iop_module_t *const restrict module,
   // we look at the outer circle of the shape - no effects outside of
   // this circle; we need many points as we do not know how the circle
   // might get distorted in the pixelpipe
-  const size_t circpts = dt_masks_roundup(MIN(360, 2 * M_PI * total2), 8);
+  const size_t circpts = dt_masks_roundup(MIN(360, DT_2PI_F * total2), 8);
   float *const restrict circ = dt_alloc_align_float(circpts * 2);
   if(circ == NULL) return 0;
 
   DT_OMP_FOR(if(circpts/8 > 1000))
   for(int n = 0; n < circpts / 8; n++)
   {
-    const float phi = (2.0f * M_PI * n) / circpts;
+    const float phi = (DT_2PI_F * n) / circpts;
     const float x = total * cosf(phi);
     const float y = total * sinf(phi);
     const float cx = centerx;

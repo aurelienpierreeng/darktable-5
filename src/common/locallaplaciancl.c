@@ -1,7 +1,7 @@
 #ifdef HAVE_OPENCL
 /*
     This file is part of darktable,
-    Copyright (C) 2016-2020 darktable developers.
+    Copyright (C) 2016-2026 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -37,7 +37,6 @@ dt_local_laplacian_cl_global_t *dt_local_laplacian_init_cl_global()
 
   const int program = 19; // locallaplacian.cl, from programs.conf
   g->kernel_pad_input          = dt_opencl_create_kernel(program, "pad_input");
-  g->kernel_gauss_expand       = dt_opencl_create_kernel(program, "gauss_expand");
   g->kernel_gauss_reduce       = dt_opencl_create_kernel(program, "gauss_reduce");
   g->kernel_laplacian_assemble = dt_opencl_create_kernel(program, "laplacian_assemble");
   g->kernel_process_curve      = dt_opencl_create_kernel(program, "process_curve");
@@ -121,10 +120,9 @@ error:
   return NULL;
 }
 
-cl_int dt_local_laplacian_cl(
-    dt_local_laplacian_cl_t *b, // opencl context with temp buffers
-    cl_mem input,               // input buffer in some Labx or yuvx format
-    cl_mem output)              // output buffer with colour
+cl_int dt_local_laplacian_cl(dt_local_laplacian_cl_t *b, // opencl context with temp buffers
+                             cl_mem input,               // input buffer in some Labx or yuvx format
+                             cl_mem output)              // output buffer with colour
 {
   if(b->bwidth <= 1 || b->bheight <= 1) return DT_OPENCL_DEFAULT_ERROR;
 
@@ -136,15 +134,19 @@ cl_int dt_local_laplacian_cl(
   // create gauss pyramid of padded input, write coarse directly to output
   for(int l=1;l<b->num_levels;l++)
   {
-    const int wd = dl(b->bwidth, l), ht = dl(b->bheight, l);
-    size_t sizes[] = { ROUNDUPDWD(wd, b->devid), ROUNDUPDHT(ht, b->devid), 1 };
-    dt_opencl_set_kernel_args(b->devid, b->global->kernel_gauss_reduce, 0, CLARG(b->dev_padded[l-1]));
+    const int wd = dl(b->bwidth, l);
+    const int ht = dl(b->bheight, l);
+
     if(l == b->num_levels-1)
-      dt_opencl_set_kernel_args(b->devid, b->global->kernel_gauss_reduce, 1, CLARG(b->dev_output[l]));
+      err = dt_opencl_enqueue_kernel_2d_args(b->devid, b->global->kernel_gauss_reduce, wd, ht,
+              CLARG(b->dev_padded[l-1]),
+              CLARG(b->dev_output[l]),
+              CLARG(wd), CLARG(ht));
     else
-      dt_opencl_set_kernel_args(b->devid, b->global->kernel_gauss_reduce, 1, CLARG(b->dev_padded[l]));
-    dt_opencl_set_kernel_args(b->devid, b->global->kernel_gauss_reduce, 2, CLARG(wd), CLARG(ht));
-    err = dt_opencl_enqueue_kernel_2d(b->devid, b->global->kernel_gauss_reduce, sizes);
+      err = dt_opencl_enqueue_kernel_2d_args(b->devid, b->global->kernel_gauss_reduce, wd, ht,
+              CLARG(b->dev_padded[l-1]),
+              CLARG(b->dev_padded[l]),
+              CLARG(wd), CLARG(ht));
     if(err != CL_SUCCESS) goto error;
   }
 

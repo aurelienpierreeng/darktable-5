@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2011-2023 darktable developers.
+    Copyright (C) 2011-2026 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -29,6 +29,8 @@
 #include "libs/lib.h"
 #include "libs/lib_api.h"
 
+#include <ctype.h>
+
 DT_MODULE(1)
 
 #define DT_NAVIGATION_INSET 5
@@ -49,6 +51,18 @@ static gboolean _lib_navigation_draw_callback(GtkWidget *widget,
 static gboolean _lib_navigation_motion_notify_callback(GtkWidget *widget,
                                                        GdkEventMotion *event,
                                                        dt_lib_module_t *self);
+/* scroll callback */
+static void _lib_navigation_scroll_callback(GtkEventControllerScroll *controller,
+                                            double dx, double dy,
+                                            dt_lib_module_t *self);
+/* zoom begin callback */
+static void _lib_navigation_pinch_begin_callback(GtkGesture *gesture,
+                                                GdkEventSequence* sequence,
+                                                dt_lib_module_t *self);
+/* zoom scale-changed callback */
+static void _lib_navigation_pinch_scale_callback(GtkGesture *gesture,
+                                                gdouble scale,
+                                                dt_lib_module_t *self);
 /* button press callback */
 static gboolean _lib_navigation_button_press_callback(GtkWidget *widget,
                                                       GdkEvent *event,
@@ -84,9 +98,9 @@ uint32_t container(dt_lib_module_t *self)
   return DT_UI_CONTAINER_PANEL_LEFT_TOP;
 }
 
-int expandable(dt_lib_module_t *self)
+gboolean expandable(dt_lib_module_t *self)
 {
-  return 0;
+  return FALSE;
 }
 
 int position(const dt_lib_module_t *self)
@@ -105,21 +119,22 @@ static void _lib_navigation_control_redraw_callback(gpointer instance,
   dt_dev_zoom_t zoom;
   int closeup;
   dt_dev_get_viewport_params(port, &zoom, &closeup, NULL, NULL);
-  const float cur_scale = dt_dev_get_zoom_scale(port, zoom, 1<<closeup, 0);
+  const float cur_scale = dt_dev_get_zoom_scale(port, zoom, 1<<closeup, FALSE);
 
   gchar *zoomline = zoom == DT_ZOOM_FIT ? g_strdup(_("fit"))
                   : zoom == DT_ZOOM_FILL ? g_strdup(C_("navigationbox", "fill"))
-                  : 0.5 * dt_dev_get_zoom_scale(port, DT_ZOOM_FIT, 1.0, 0)
-                    == dt_dev_get_zoom_scale(port, DT_ZOOM_FREE, 1.0, 0)
+                  : 0.5 * dt_dev_get_zoom_scale(port, DT_ZOOM_FIT, 1.0, FALSE)
+                    == dt_dev_get_zoom_scale(port, DT_ZOOM_FREE, 1.0, FALSE)
                          ? g_strdup(_("small"))
                          : g_strdup_printf("%.0f%%", cur_scale * 100 * darktable.gui->ppd);
-  ++darktable.gui->reset;
+
+  DT_ENTER_GUI_UPDATE();
   if(!dt_bauhaus_combobox_set_from_text(d->zoom, zoomline))
   {
     dt_bauhaus_combobox_set_text(d->zoom, zoomline);
     dt_bauhaus_combobox_set(d->zoom, -1);
   }
-  --darktable.gui->reset;
+  DT_LEAVE_GUI_UPDATE();
   g_free(zoomline);
 
   gtk_widget_queue_draw(gtk_bin_get_child(GTK_BIN(self->widget)));
@@ -138,6 +153,62 @@ static void _lib_navigation_collapse_callback(dt_action_t *action)
 }
 
 static void _zoom_changed(GtkWidget *widget, gpointer user_data);
+
+int _entry_select(GtkWidget *w,
+                  const char *text,
+                  const int delta,
+                  struct dt_iop_module_t **module)
+{
+  const int text_len = strlen(text);
+  int val = -1;
+  int index = 0;
+
+  // move to first digit to ensure we skip a possible % as prefix
+  for(int k=0; k<text_len; k++)
+  {
+    if(isdigit(text[k]))
+    {
+      index = k;
+      break;
+    }
+  }
+  sscanf(&text[index], "%d", &val);
+
+  int ret = -1;
+
+  if(delta > 0)
+  {
+    if(val < 50)
+      ret = 3; // 50
+    else if(val < 100)
+      ret = 4; // 100
+    else if(val < 200)
+      ret = 5; // 200
+    else if(val < 400)
+      ret = 6; // 400
+    else if(val < 800)
+      ret = 7; // 800
+    else if(val < 1600)
+      ret = 8; // 1600
+  }
+  else
+  {
+    if(val < 50)
+      ret = 2; //  fit
+    else if(val < 100)
+      ret = 3; //  50
+    else if(val < 200)
+      ret = 4; // 100
+    else if(val < 400)
+      ret = 5; // 200
+    else if(val < 800)
+      ret = 6; // 400
+    else if(val < 1600)
+      ret = 7; // 800
+  }
+
+  return ret;
+}
 
 void gui_init(dt_lib_module_t *self)
 {
@@ -159,10 +230,17 @@ void gui_init(dt_lib_module_t *self)
                    G_CALLBACK(_lib_navigation_draw_callback), self);
   g_signal_connect(G_OBJECT(thumbnail), "button-press-event",
                    G_CALLBACK(_lib_navigation_button_press_callback), self);
-  g_signal_connect(G_OBJECT(thumbnail), "scroll-event",
-                   G_CALLBACK(_lib_navigation_button_press_callback), self);
   g_signal_connect(G_OBJECT(thumbnail), "button-release-event",
                    G_CALLBACK(_lib_navigation_button_release_callback), self);
+  dt_gui_connect_scroll(thumbnail, GTK_EVENT_CONTROLLER_SCROLL_BOTH_AXES,
+                        _lib_navigation_scroll_callback, self);
+  // FIXME: Make helper function for zoom gesture. If discrete zooming
+  //        as here is a well-used pattern, make proxy which handles
+  //        this so don't need to implement a "begin" handler here.
+  GtkGesture *zoom_gesture = gtk_gesture_zoom_new(thumbnail);
+  g_object_weak_ref(G_OBJECT(thumbnail), (GWeakNotify) g_object_unref, zoom_gesture);
+  g_signal_connect(zoom_gesture, "begin", G_CALLBACK(_lib_navigation_pinch_begin_callback), self);
+  g_signal_connect(zoom_gesture, "scale-changed", G_CALLBACK(_lib_navigation_pinch_scale_callback), self);
   g_signal_connect(G_OBJECT(thumbnail), "motion-notify-event",
                    G_CALLBACK(_lib_navigation_motion_notify_callback), self);
   g_signal_connect(G_OBJECT(thumbnail), "leave-notify-event",
@@ -178,10 +256,10 @@ void gui_init(dt_lib_module_t *self)
                      GDK_KEY_N, GDK_CONTROL_MASK | GDK_SHIFT_MASK);
 
   /* connect a redraw callback to control draw all and preview pipe finish signals */
-  DT_CONTROL_SIGNAL_CONNECT(DT_SIGNAL_DEVELOP_PREVIEW_PIPE_FINISHED,
-                            _lib_navigation_control_redraw_callback, self);
-  DT_CONTROL_SIGNAL_CONNECT(DT_SIGNAL_CONTROL_NAVIGATION_REDRAW,
-                            _lib_navigation_control_redraw_callback, self);
+  DT_CONTROL_SIGNAL_HANDLE(DT_SIGNAL_DEVELOP_PREVIEW_PIPE_FINISHED,
+                           _lib_navigation_control_redraw_callback);
+  DT_CONTROL_SIGNAL_HANDLE(DT_SIGNAL_CONTROL_NAVIGATION_REDRAW,
+                           _lib_navigation_control_redraw_callback);
 
   DT_BAUHAUS_COMBOBOX_NEW_FULL(d->zoom, darktable.view_manager->proxy.darkroom.view,
                                NULL, N_("zoom"), _("image zoom level"),
@@ -195,6 +273,11 @@ void gui_init(dt_lib_module_t *self)
                                N_("400%"),
                                N_("800%"),
                                N_("1600%"));
+
+  // default zoom is fit, used if the entry_select_fct cannot get the proper zoom
+  // (should not happen in normal behavior)
+  dt_bauhaus_combobox_set_default(d->zoom, 1);
+  dt_bauhaus_combobox_add_entry_select_fct(d->zoom, _entry_select);
 
   ac = dt_action_section(&darktable.view_manager->proxy.darkroom.view->actions, N_("zoom"));
   dt_shortcut_register(ac, 0, DT_ACTION_EFFECT_COMBO_SEPARATOR + 2,
@@ -219,9 +302,6 @@ void gui_init(dt_lib_module_t *self)
 
 void gui_cleanup(dt_lib_module_t *self)
 {
-  /* disconnect from signal */
-  DT_CONTROL_SIGNAL_DISCONNECT(_lib_navigation_control_redraw_callback, self);
-
   g_free(self->data);
   self->data = NULL;
 }
@@ -256,9 +336,9 @@ static gboolean _lib_navigation_draw_callback(GtkWidget *widget,
     const float scale = fminf(width / (float)wd, height / (float)ht);
 
     const int stride = cairo_format_stride_for_width(CAIRO_FORMAT_RGB24, wd);
-    cairo_surface_t *surface
-        = cairo_image_surface_create_for_data(dev->preview_pipe->backbuf,
-                                              CAIRO_FORMAT_RGB24, wd, ht, stride);
+    cairo_surface_t *surface =
+      cairo_image_surface_create_for_data(dev->preview_pipe->backbuf,
+                                          CAIRO_FORMAT_RGB24, wd, ht, stride);
     cairo_translate(cr, width / 2.0, height / 2.0f);
     cairo_scale(cr, scale, scale);
     cairo_translate(cr, -.5f * wd, -.5f * ht);
@@ -358,7 +438,6 @@ static void _zoom_changed(GtkWidget *widget, gpointer user_data)
   if(val == -1 && 1 != sscanf(dt_bauhaus_combobox_get_text(widget), "%d", &val))
     return;
 
-  // dt_lib_module_t *self = (dt_lib_module_t *)user_data;
   dt_develop_t *dev = darktable.develop;
   if(!dev) return;
 
@@ -370,7 +449,7 @@ static void _zoom_changed(GtkWidget *widget, gpointer user_data)
   dt_dev_zoom_t zoom = DT_ZOOM_FREE;
 
   if(val == 0u) // small
-    scale = 0.5 * dt_dev_get_zoom_scale(port, DT_ZOOM_FIT, 1.0, 0);
+    scale = 0.5 * dt_dev_get_zoom_scale(port, DT_ZOOM_FIT, 1.0, FALSE);
   else if(val == 1u || val == -1u) // fit to screen
     zoom = DT_ZOOM_FIT;
   else if(val == 2u) // fill screen
@@ -387,7 +466,124 @@ static void _zoom_changed(GtkWidget *widget, gpointer user_data)
   else
     scale = val / 100.0f * ppd;
 
-  dt_dev_zoom_move(port, zoom, scale, closeup, -1.0f, -1.0f, TRUE);
+  // Preset zoom picks (small / 50% / custom %) take DT_ZOOM_FREE with an
+  // explicit scale — don't run them through the constrain soft caps.
+  dt_dev_zoom_move(port, zoom, scale, closeup, -1.0f, -1.0f,
+                   zoom != DT_ZOOM_FREE);
+}
+
+static gboolean _lib_navigation_widget_to_center(GtkEventController *controller,
+                                                 const gdouble in_x,
+                                                 const gdouble in_y,
+                                                 gdouble *out_x,
+                                                 gdouble *out_y)
+{
+  dt_develop_t *dev = darktable.develop;
+  if(!dev->preview_pipe->backbuf
+     || dev->image_storage.id != dev->preview_pipe->output_imgid)
+    return FALSE;
+  dt_dev_viewport_t *port = &dev->full;
+
+  GtkAllocation alloc_nav, alloc_center;
+  GtkWidget *nav = gtk_event_controller_get_widget(controller);
+  GtkWidget *center = dt_ui_center(darktable.gui->ui);
+  gtk_widget_get_allocation(nav, &alloc_nav);
+  gtk_widget_get_allocation(center, &alloc_center);
+  int procw, proch;
+  dt_dev_get_processed_size(port, &procw, &proch);
+
+  // navigation widget image dimensions
+  const double nav_scale = MIN((double)alloc_nav.width / procw,
+                               (double)alloc_nav.height / proch);
+  const double nav_img_w = procw * nav_scale;
+  const double nav_img_h = proch * nav_scale;
+  // nav widget coords to nav widget's image coords
+  const double x_nav_img = in_x - (alloc_nav.width - nav_img_w) / 2.0;
+  const double y_nav_img = in_y - (alloc_nav.height - nav_img_h) / 2.0;
+
+  // visible part of image in center widget in navigation widget
+  // coords with zoom-to-fit defaults
+  float zoom_x, zoom_y, boxw, boxh;
+  if(!dt_dev_get_zoom_bounds(port, &zoom_x, &zoom_y, &boxw, &boxh))
+  { // zoom-to-fit
+    zoom_x = zoom_y = 0.0;
+    boxw = boxh = 1.0;
+  }
+  const double vis_w = nav_img_w * boxw;
+  const double vis_h = nav_img_h * boxh;
+  const double vis_x = nav_img_w * (0.5 + zoom_x) - vis_w * 0.5;
+  const double vis_y = nav_img_h * (0.5 + zoom_y) - vis_h * 0.5;
+
+  // navigation image coords to center widget coords
+  *out_x = (x_nav_img - vis_x) / vis_w * alloc_center.width;
+  *out_y = (y_nav_img - vis_y) / vis_h * alloc_center.height;
+  return TRUE;
+}
+
+static void _lib_navigation_scroll_callback(GtkEventControllerScroll *controller,
+                                            const double dx,
+                                            const double dy,
+                                            // FIXME: if unused don't pass
+                                            dt_lib_module_t *self)
+{
+  GdkEvent *event = gtk_get_current_event();
+  if(event)
+  {
+    GdkDevice *device = gdk_event_get_source_device(event);
+    if(device
+       && gdk_device_get_source(device) == GDK_SOURCE_TOUCHPAD
+       && event->scroll.direction == GDK_SCROLL_SMOOTH)
+    {
+      dt_dev_zoom_move(&darktable.develop->full, DT_ZOOM_MOVE,
+                       15.0, 0, dx, dy, TRUE);
+    }
+    else
+    {
+      const gboolean constrain = !dt_modifier_eq(controller, GDK_CONTROL_MASK);
+      gdouble x, y;
+      if(_lib_navigation_widget_to_center(GTK_EVENT_CONTROLLER(controller),
+                                          event->scroll.x, event->scroll.y,
+                                          &x, &y))
+        dt_dev_zoom_move(&darktable.develop->full, DT_ZOOM_SCROLL,
+                         0.0f, dy < 0, x, y, constrain);
+    }
+    gdk_event_free(event);
+  }
+}
+
+static gdouble pinch_last_scale = 1.0;
+
+static void _lib_navigation_pinch_begin_callback(GtkGesture *gesture,
+                                                 GdkEventSequence* sequence,
+                                                 dt_lib_module_t *self)
+{
+  gtk_gesture_set_state(gesture, GTK_EVENT_SEQUENCE_CLAIMED);
+  pinch_last_scale = 1.0;
+}
+
+static void _lib_navigation_pinch_scale_callback(GtkGesture *gesture,
+                                                 const gdouble scale,
+                                                 dt_lib_module_t *self)
+{
+  gdouble wx, wy, cx, cy;
+  if(gtk_gesture_get_bounding_box_center(gesture, &wx, &wy)
+     && _lib_navigation_widget_to_center(GTK_EVENT_CONTROLLER(gesture),
+                                         wx, wy, &cx, &cy))
+  {
+    const double pinch_step_ratio = 1.1;
+    const double ratio = scale / pinch_last_scale;
+    int zoom_step = -1;
+    if(ratio > pinch_step_ratio)
+      zoom_step = 1;
+    else if(ratio < 1.0 / pinch_step_ratio)
+      zoom_step = 0;
+    if(zoom_step >= 0)
+    {
+      dt_dev_zoom_move(&darktable.develop->full, DT_ZOOM_SCROLL,
+                       0.0f, zoom_step, cx, cy, TRUE);
+      pinch_last_scale = scale;
+    }
+  }
 }
 
 static gboolean _lib_navigation_button_press_callback(GtkWidget *widget,

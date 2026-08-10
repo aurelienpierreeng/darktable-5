@@ -20,13 +20,22 @@
 
 #include <stdint.h>
 
-#ifdef HAVE_CONFIG_H
-#include "config.h"
-#endif
+G_BEGIN_DECLS
 
-#ifdef __cplusplus
-extern "C" {
-#endif /* __cplusplus */
+/**
+ * struct used by iop modules to connect to pixelpipe.
+ * data can be used to store whatever private data and
+ * will be freed at the end.
+ */
+struct dt_iop_module_t;
+struct dt_develop_tiling_t;
+struct dt_iop_order_iccprofile_info_t;
+
+typedef struct dt_iop_roi_t
+{
+  int x, y, width, height;
+  float scale;
+} dt_iop_roi_t;
 
 /* The pixelpipe types here are all defined as a bit mask to ensure easy testing via & operator */
 typedef enum dt_dev_pixelpipe_type_t
@@ -38,6 +47,7 @@ typedef enum dt_dev_pixelpipe_type_t
   DT_DEV_PIXELPIPE_THUMBNAIL = 1 << 3,
   DT_DEV_PIXELPIPE_PREVIEW2  = 1 << 4,
   DT_DEV_PIXELPIPE_SCREEN    = DT_DEV_PIXELPIPE_PREVIEW | DT_DEV_PIXELPIPE_FULL | DT_DEV_PIXELPIPE_PREVIEW2,
+  DT_DEV_PIXELPIPE_CANVAS    = DT_DEV_PIXELPIPE_FULL | DT_DEV_PIXELPIPE_PREVIEW2,
   DT_DEV_PIXELPIPE_ANY       = DT_DEV_PIXELPIPE_EXPORT | DT_DEV_PIXELPIPE_FULL | DT_DEV_PIXELPIPE_PREVIEW
                                | DT_DEV_PIXELPIPE_THUMBNAIL | DT_DEV_PIXELPIPE_PREVIEW2,
   DT_DEV_PIXELPIPE_FAST      = 1 << 8,
@@ -110,9 +120,7 @@ typedef struct dt_dev_histogram_stats_t
 typedef void dt_iop_params_t;
 #endif
 
-#ifdef __cplusplus
-} // extern "C"
-#endif /* __cplusplus */
+G_END_DECLS
 
 #include "develop/pixelpipe_hb.h"
 

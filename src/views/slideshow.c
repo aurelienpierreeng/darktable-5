@@ -180,7 +180,7 @@ static void _shift_right(dt_slideshow_t *d)
 
 static void _requeue_job(dt_slideshow_t *d)
 {
-  dt_control_add_job(darktable.control, DT_JOB_QUEUE_USER_BG, _process_job_create(d));
+  dt_control_add_job(DT_JOB_QUEUE_USER_BG, _process_job_create(d));
 }
 
 static void _set_delay(dt_slideshow_t *d,
@@ -212,7 +212,6 @@ static int _process_image(dt_slideshow_t *d,
      NULL,
      &width,
      &height,
-     NULL,
      NULL,
      -1,
      NULL,
@@ -433,7 +432,7 @@ void enter(dt_view_t *self)
 {
   dt_slideshow_t *d = self->data;
 
-  dt_control_change_cursor(GDK_BLANK_CURSOR);
+  dt_control_change_cursor("none");
   d->mouse_timeout = 0;
   d->exporting = 0;
   d->id_displayed = -1;
@@ -510,7 +509,7 @@ void enter(dt_view_t *self)
 
   // start first job
   dt_control_queue_redraw_center();
-  dt_control_add_job(darktable.control, DT_JOB_QUEUE_USER_BG, _process_job_create(d));
+  dt_control_add_job(DT_JOB_QUEUE_USER_BG, _process_job_create(d));
   dt_control_log(_("waiting to start slideshow"));
 }
 
@@ -520,7 +519,7 @@ void leave(dt_view_t *self)
 
   if(d->mouse_timeout > 0) g_source_remove(d->mouse_timeout);
   d->mouse_timeout = 0;
-  dt_control_change_cursor(GDK_LEFT_PTR);
+  dt_control_change_cursor("default");
   d->auto_advance = FALSE;
 
   // exporting could be in action, just wait for the last to finish
@@ -585,9 +584,8 @@ void expose(dt_view_t *self,
   {
     // get a small preview
     dt_mipmap_buffer_t buf;
-    dt_mipmap_size_t mip =
-      dt_mipmap_cache_get_matching_size(darktable.mipmap_cache, width / 8, height / 8);
-    dt_mipmap_cache_get(darktable.mipmap_cache, &buf, imgid, mip, DT_MIPMAP_BLOCKING, 'r');
+    dt_mipmap_size_t mip = dt_mipmap_cache_get_matching_size(width / 8, height / 8);
+    dt_mipmap_cache_get(&buf, imgid, mip, DT_MIPMAP_BLOCKING, 'r');
     if(buf.buf)
     {
       double scale = MIN((double)width / buf.width, (double)height / buf.height);
@@ -602,7 +600,7 @@ void expose(dt_view_t *self,
     }
 
     d->id_preview_displayed = imgid;
-    dt_mipmap_cache_release(darktable.mipmap_cache, &buf);
+    dt_mipmap_cache_release(&buf);
   }
 
   cairo_restore(cr);
@@ -618,7 +616,7 @@ static gboolean _hide_mouse(gpointer user_data)
   dt_view_t *self = (dt_view_t *)user_data;
   dt_slideshow_t *d = self->data;
   d->mouse_timeout = 0;
-  dt_control_change_cursor(GDK_BLANK_CURSOR);
+  dt_control_change_cursor("none");
   return FALSE;
 }
 
@@ -634,7 +632,7 @@ void mouse_moved(dt_view_t *self,
   if(d->mouse_timeout > 0)
     g_source_remove(d->mouse_timeout);
   else
-    dt_control_change_cursor(GDK_LEFT_PTR);
+    dt_control_change_cursor("default");
   d->mouse_timeout = g_timeout_add_seconds(1, _hide_mouse, self);
 }
 
@@ -659,9 +657,9 @@ int button_pressed(dt_view_t *self,
 {
   dt_slideshow_t *d = self->data;
 
-  if(which == 1)
+  if(which == GDK_BUTTON_PRIMARY)
     _step_state(d, S_REQUEST_STEP);
-  else if(which == 3)
+  else if(which == GDK_BUTTON_SECONDARY)
     _step_state(d, S_REQUEST_STEP_BACK);
   else
     return 1;

@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2018-2024 darktable developers.
+    Copyright (C) 2018-2026 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -15,10 +15,6 @@
     You should have received a copy of the GNU General Public License
     along with darktable.  If not, see <http://www.gnu.org/licenses/>.
 */
-
-#ifdef HAVE_CONFIG_H
-#include "config.h"
-#endif
 
 #include "common/darktable.h"
 #include "common/iop_order.h"
@@ -86,6 +82,7 @@ const dt_iop_order_entry_t legacy_order[] = {
   { { 1.0f }, "rawprepare", 0},
   { { 2.0f }, "invert", 0},
   { { 3.0f }, "temperature", 0},
+  { { 3.1f }, "rasterfile", 0},
   { { 4.0f }, "highlights", 0},
   { { 5.0f }, "cacorrect", 0},
   { { 6.0f }, "hotpixels", 0},
@@ -127,6 +124,7 @@ const dt_iop_order_entry_t legacy_order[] = {
   { {30.0f }, "defringe", 0},
   { {31.0f }, "equalizer", 0},
   { {32.0f }, "vibrance", 0},
+  { {32.5f }, "colorharmonizer", 0},
   { {33.0f }, "colorbalance", 0},
   { {33.2f }, "colorequal", 0},
   { {33.5f }, "colorbalancergb", 0},
@@ -143,6 +141,7 @@ const dt_iop_order_entry_t legacy_order[] = {
   { {44.0f }, "lowlight", 0},
   { {45.0f }, "monochrome", 0},
   { {45.3f }, "sigmoid", 0},
+  { {45.5f }, "agx", 0},
   { {46.0f }, "filmic", 0},
   { {46.5f }, "filmicrgb", 0},
   { {47.0f }, "colisa", 0},
@@ -181,6 +180,7 @@ const dt_iop_order_entry_t v30_order[] = {
   { { 1.0 }, "rawprepare", 0},
   { { 2.0 }, "invert", 0},
   { { 3.0f }, "temperature", 0},
+  { { 3.1f }, "rasterfile", 0},
   { { 4.0f }, "highlights", 0},
   { { 5.0f }, "cacorrect", 0},
   { { 6.0f }, "hotpixels", 0},
@@ -246,6 +246,7 @@ const dt_iop_order_entry_t v30_order[] = {
                                   //    Really versatile yet under-used module, doing linear ops,
                                   //    very good in scene-referred workflow
   { {40.0f }, "basicadj", 0},        // module mixing view/model/control at once, usage should be discouraged
+  { {40.5f }, "colorharmonizer", 0}, // nudges hues towards a set of target nodes
   { {41.0f }, "colorbalance", 0},    // scene-referred color manipulation
   { {41.2f }, "colorequal", 0},
   { {41.5f }, "colorbalancergb", 0},    // scene-referred color manipulation
@@ -255,6 +256,7 @@ const dt_iop_order_entry_t v30_order[] = {
                                   //    on camera JPEG default look
   { {45.0f }, "filmic", 0},          // same, but different (parametric) approach
   { {45.3f }, "sigmoid", 0},
+  { {45.5f }, "agx", 0},
   { {46.0f }, "filmicrgb", 0},       // same, upgraded
   { {36.0f }, "lut3d", 0},           // apply a creative style or film emulation, possibly non-linear
   { {47.0f }, "colisa", 0},          // edit contrast while damaging colour
@@ -297,6 +299,7 @@ const dt_iop_order_entry_t v50_order[] = {
   { { 1.0 }, "rawprepare", 0},
   { { 2.0 }, "invert", 0},
   { { 3.0f }, "temperature", 0},
+  { { 3.1f }, "rasterfile", 0},
   { { 4.0f }, "highlights", 0},
   { { 5.0f }, "cacorrect", 0},
   { { 6.0f }, "hotpixels", 0},
@@ -362,6 +365,7 @@ const dt_iop_order_entry_t v50_order[] = {
                                   //    Really versatile yet under-used module, doing linear ops,
                                   //    very good in scene-referred workflow
   { {40.0f }, "basicadj", 0},        // module mixing view/model/control at once, usage should be discouraged
+  { {40.5f }, "colorharmonizer", 0}, // nudges hues towards a set of target nodes
   { {41.0f }, "colorbalance", 0},    // scene-referred color manipulation
   { {41.2f }, "colorequal", 0},
   { {41.5f }, "colorbalancergb", 0},    // scene-referred color manipulation
@@ -371,6 +375,7 @@ const dt_iop_order_entry_t v50_order[] = {
                                   //    on camera JPEG default look
   { {45.0f }, "filmic", 0},          // same, but different (parametric) approach
   { {45.3f }, "sigmoid", 0},
+  { {45.5f }, "agx", 0},
   { {46.0f }, "filmicrgb", 0},       // same, upgraded
   { {36.0f }, "lut3d", 0},           // apply a creative style or film emulation, possibly non-linear
   { {47.0f }, "colisa", 0},          // edit contrast while damaging colour
@@ -415,6 +420,7 @@ const dt_iop_order_entry_t v30_jpg_order[] = {
   { { 1.0 }, "rawprepare", 0 },
   { { 2.0 }, "invert", 0 },
   { { 3.0f }, "temperature", 0 },
+  { { 3.1f }, "rasterfile", 0},
   { { 4.0f }, "highlights", 0 },
   { { 5.0f }, "cacorrect", 0 },
   { { 6.0f }, "hotpixels", 0 },
@@ -478,6 +484,7 @@ const dt_iop_order_entry_t v30_jpg_order[] = {
                                     //    profile. Really versatile yet under-used module, doing linear ops, very
                                     //    good in scene-referred workflow
   { { 40.0f }, "basicadj", 0 },        // module mixing view/model/control at once, usage should be discouraged
+  { { 40.5f }, "colorharmonizer", 0 }, // nudges hues towards a set of target nodes
   { { 41.0f }, "colorbalance", 0 },    // scene-referred color manipulation
   { { 41.2f }, "colorequal", 0 },
   { { 41.5f }, "colorbalancergb", 0 }, // scene-referred color manipulation
@@ -487,6 +494,7 @@ const dt_iop_order_entry_t v30_jpg_order[] = {
   { { 44.0f }, "basecurve", 0 },     // conversion from scene-referred to display referred, reverse-engineered
                                      //    on camera JPEG default look
   { { 45.0f }, "filmic", 0 },        // same, but different (parametric) approach
+  { {45.5f }, "agx", 0},
   { { 45.3f }, "sigmoid", 0},
   { { 46.0f }, "filmicrgb", 0 },     // same, upgraded
   { { 36.0f }, "lut3d", 0 },         // apply a creative style or film emulation, possibly non-linear
@@ -534,6 +542,7 @@ const dt_iop_order_entry_t v50_jpg_order[] = {
   { { 1.0 }, "rawprepare", 0 },
   { { 2.0 }, "invert", 0 },
   { { 3.0f }, "temperature", 0 },
+  { { 3.1f }, "rasterfile", 0},
   { { 4.0f }, "highlights", 0 },
   { { 5.0f }, "cacorrect", 0 },
   { { 6.0f }, "hotpixels", 0 },
@@ -597,6 +606,7 @@ const dt_iop_order_entry_t v50_jpg_order[] = {
                                     //    profile. Really versatile yet under-used module, doing linear ops, very
                                     //    good in scene-referred workflow
   { { 40.0f }, "basicadj", 0 },        // module mixing view/model/control at once, usage should be discouraged
+  { { 40.5f }, "colorharmonizer", 0 }, // nudges hues towards a set of target nodes
   { { 41.0f }, "colorbalance", 0 },    // scene-referred color manipulation
   { { 41.2f }, "colorequal", 0 },
   { { 41.5f }, "colorbalancergb", 0 }, // scene-referred color manipulation
@@ -607,6 +617,7 @@ const dt_iop_order_entry_t v50_jpg_order[] = {
                                      //    on camera JPEG default look
   { { 45.0f }, "filmic", 0 },        // same, but different (parametric) approach
   { { 45.3f }, "sigmoid", 0},
+  { {45.5f }, "agx", 0},
   { { 46.0f }, "filmicrgb", 0 },     // same, upgraded
   { { 36.0f }, "lut3d", 0 },         // apply a creative style or film emulation, possibly non-linear
   { { 47.0f }, "colisa", 0 },        // edit contrast while damaging colour
@@ -705,7 +716,31 @@ static GList *_insert_before(GList *iop_order_list,
   return iop_order_list;
 }
 
-dt_iop_order_t _ioppr_get_default_iop_order_version(const dt_imgid_t imgid)
+void dt_ioppr_migrate_legacy_iop_order_list(GList *iop_order_list)
+{
+  // @@_NEW_MODULE: For new module it is required to insert
+  //                the new module name in the iop-order list here.
+  //                The insertion can be done depending on the current
+  //                iop-order list kind.
+  _insert_before(iop_order_list, "nlmeans", "negadoctor");
+  _insert_before(iop_order_list, "negadoctor", "channelmixerrgb");
+  _insert_before(iop_order_list, "negadoctor", "censorize");
+  _insert_before(iop_order_list, "negadoctor", "primaries");
+  _insert_before(iop_order_list, "rgbcurve", "colorbalancergb");
+  _insert_before(iop_order_list, "ashift", "cacorrectrgb");
+  _insert_before(iop_order_list, "graduatednd", "crop");
+  _insert_before(iop_order_list, "flip", "enlargecanvas");
+  _insert_before(iop_order_list, "enlargecanvas", "overlay");
+  _insert_before(iop_order_list, "colorbalance", "diffuse");
+  _insert_before(iop_order_list, "nlmeans", "blurs");
+  _insert_before(iop_order_list, "filmicrgb", "sigmoid");
+  _insert_before(iop_order_list, "filmicrgb", "agx");
+  _insert_before(iop_order_list, "colorbalancergb", "colorequal");
+  _insert_before(iop_order_list, "highlights", "rasterfile");
+  _insert_before(iop_order_list, "colorbalance", "colorharmonizer");
+}
+
+static dt_iop_order_t _ioppr_get_default_iop_order_version(const dt_imgid_t imgid)
 {
   const gboolean is_display_referred = dt_is_display_referred();
   gboolean is_ldr = FALSE;
@@ -757,7 +792,7 @@ dt_iop_order_t dt_ioppr_get_iop_order_version(const dt_imgid_t imgid)
 
 // a rule prevents operations to be switched, that is a prev operation
 // will not be allowed to be moved on top of the next operation.
-GList *dt_ioppr_get_iop_order_rules()
+GList *dt_ioppr_get_iop_order_rules(void)
 {
   GList *rules = NULL;
 
@@ -815,9 +850,9 @@ GList *dt_ioppr_get_iop_order_link(GList *iop_order_list,
 }
 
 // returns the first iop order entry that matches operation == op_name
-dt_iop_order_entry_t *dt_ioppr_get_iop_order_entry(GList *iop_order_list,
-                                                   const char *op_name,
-                                                   const int multi_priority)
+static dt_iop_order_entry_t *_ioppr_get_iop_order_entry(GList *iop_order_list,
+                                                        const char *op_name,
+                                                        const int multi_priority)
 {
   const GList * const restrict link =
     dt_ioppr_get_iop_order_link(iop_order_list, op_name, multi_priority);
@@ -835,7 +870,7 @@ int dt_ioppr_get_iop_order(GList *iop_order_list,
 {
   int iop_order = INT_MAX;
   const dt_iop_order_entry_t *const restrict order_entry =
-    dt_ioppr_get_iop_order_entry(iop_order_list, op_name, multi_priority);
+    _ioppr_get_iop_order_entry(iop_order_list, op_name, multi_priority);
 
   if(order_entry)
   {
@@ -1160,23 +1195,7 @@ GList *dt_ioppr_get_iop_order_list(const dt_imgid_t imgid,
         }
         else
         {
-          // @@_NEW_MODULE: For new module it is required to insert
-          //                the new module name in the iop-order list here.
-          //                The insertion can be done depending on the current
-          //                iop-order list kind.
-          _insert_before(iop_order_list, "nlmeans", "negadoctor");
-          _insert_before(iop_order_list, "negadoctor", "channelmixerrgb");
-          _insert_before(iop_order_list, "negadoctor", "censorize");
-          _insert_before(iop_order_list, "negadoctor", "primaries");
-          _insert_before(iop_order_list, "rgbcurve", "colorbalancergb");
-          _insert_before(iop_order_list, "ashift", "cacorrectrgb");
-          _insert_before(iop_order_list, "graduatednd", "crop");
-          _insert_before(iop_order_list, "flip", "enlargecanvas");
-          _insert_before(iop_order_list, "enlargecanvas", "overlay");
-          _insert_before(iop_order_list, "colorbalance", "diffuse");
-          _insert_before(iop_order_list, "nlmeans", "blurs");
-          _insert_before(iop_order_list, "filmicrgb", "sigmoid");
-          _insert_before(iop_order_list, "colorbalancergb", "colorequal");
+          dt_ioppr_migrate_legacy_iop_order_list(iop_order_list);
         }
       }
       else if(version >= DT_IOP_ORDER_LEGACY
@@ -1459,7 +1478,7 @@ static void _count_iop_module(GList *iop,
   for(const GList *modules = iop; modules; modules = g_list_next(modules))
   {
     const dt_iop_module_t *const restrict mod = modules->data;
-    if(dt_iop_module_is(mod->so, operation))
+    if(dt_iop_module_is(mod, operation))
     {
       (*count)++;
       if(*max_multi_priority < mod->multi_priority)
@@ -1503,7 +1522,7 @@ static gboolean _operation_already_handled(GList *e_list,
 }
 
 // returns the nth module's priority being active or not
-int _get_multi_priority(dt_develop_t *dev,
+static int _get_multi_priority(dt_develop_t *dev,
                         const char *operation,
                         const int n,
                         const gboolean only_disabled)
@@ -1512,7 +1531,7 @@ int _get_multi_priority(dt_develop_t *dev,
   for(const GList *l = dev->iop; l; l = g_list_next(l))
   {
     const dt_iop_module_t *const restrict mod = l->data;
-    if((!only_disabled || !mod->enabled) && dt_iop_module_is(mod->so, operation))
+    if((!only_disabled || !mod->enabled) && dt_iop_module_is(mod, operation))
     {
       count++;
       if(count == n) return mod->multi_priority;
@@ -1522,9 +1541,9 @@ int _get_multi_priority(dt_develop_t *dev,
   return INT_MAX;
 }
 
-void dt_ioppr_update_for_entries(dt_develop_t *dev,
-                                 GList *entry_list,
-                                 const gboolean append)
+static void _ioppr_update_for_entries(dt_develop_t *dev,
+                                      GList *entry_list,
+                                      const gboolean append)
 {
   // for each priority list to be checked
   for(GList *e_list = entry_list; e_list; e_list = g_list_next(e_list))
@@ -1656,7 +1675,7 @@ void dt_ioppr_update_for_style_items(dt_develop_t *dev,
 
   e_list = g_list_reverse(e_list);  // list was built in reverse order, so un-reverse it
 
-  dt_ioppr_update_for_entries(dev, e_list, append);
+  _ioppr_update_for_entries(dev, e_list, append);
 
   // write back the multi-priority
 
@@ -1703,7 +1722,7 @@ void dt_ioppr_update_for_modules(dt_develop_t *dev,
   }
   e_list = g_list_reverse(e_list);  // list was built in reverse order, so un-reverse it
 
-  dt_ioppr_update_for_entries(dev, e_list, append);
+  _ioppr_update_for_entries(dev, e_list, append);
 
   // write back the multi-priority
 
@@ -1869,7 +1888,7 @@ gboolean dt_ioppr_check_so_iop_order(GList *iop_list,
   {
     const dt_iop_module_so_t *const restrict mod = modules->data;
     const dt_iop_order_entry_t *const restrict entry =
-      dt_ioppr_get_iop_order_entry(iop_order_list, mod->op, 0); // mod->multi_priority);
+      _ioppr_get_iop_order_entry(iop_order_list, mod->op, 0); // mod->multi_priority);
     if(entry == NULL)
     {
       iop_order_missing = TRUE;
@@ -1965,8 +1984,8 @@ gboolean dt_ioppr_check_can_move_before_iop(GList *iop_list,
         {
           const dt_iop_order_rule_t *const restrict rule = rules->data;
 
-          if(dt_iop_module_is(module->so, rule->op_prev)
-             && dt_iop_module_is(mod->so, rule->op_next))
+          if(dt_iop_module_is(module, rule->op_prev)
+             && dt_iop_module_is(mod, rule->op_next))
           {
             rule_found = TRUE;
             break;
@@ -2052,8 +2071,8 @@ gboolean dt_ioppr_check_can_move_before_iop(GList *iop_list,
         {
           const dt_iop_order_rule_t *const restrict rule = rules->data;
 
-          if(dt_iop_module_is(mod->so, rule->op_prev)
-             && dt_iop_module_is(module->so, rule->op_next))
+          if(dt_iop_module_is(mod, rule->op_prev)
+             && dt_iop_module_is(module, rule->op_next))
           {
             rule_found = TRUE;
             break;
@@ -2345,7 +2364,7 @@ static void _ioppr_check_rules(GList *iop_list,
       const dt_iop_order_rule_t *const restrict rule = rules->data;
 
       // mod must be before rule->op_next
-      if(dt_iop_module_is(mod->so, rule->op_prev))
+      if(dt_iop_module_is(mod, rule->op_prev))
       {
         // check if there's a rule->op_next module before mod
         for(const GList *modules_prev = g_list_previous(modules);
@@ -2367,7 +2386,7 @@ static void _ioppr_check_rules(GList *iop_list,
         }
       }
       // mod must be after rule->op_prev
-      else if(dt_iop_module_is(mod->so, rule->op_next))
+      else if(dt_iop_module_is(mod, rule->op_next))
       {
         // check if there's a rule->op_prev module after mod
         for(const GList *modules_next = g_list_next(modules);
@@ -2446,7 +2465,7 @@ gboolean dt_ioppr_check_iop_order_ext(dt_develop_t *dev,
     {
       const dt_iop_module_t *const restrict mod = modules->data;
 
-      if(!dt_iop_module_is(mod->so, "gamma"))
+      if(!dt_iop_module_is_gamma(mod))
       {
         iop_order_ok = FALSE;
         dt_print(DT_DEBUG_ALWAYS,
@@ -2470,7 +2489,7 @@ gboolean dt_ioppr_check_iop_order_ext(dt_develop_t *dev,
         {
           iop_order_ok = FALSE;
           dt_print(DT_DEBUG_ALWAYS,
-                   "[dt_ioppr_check_iop_order] module not used but enabled!!"
+                   "[dt_ioppr_check_iop_order] module not used but enabled!"
                    " %s %s(%d) image %i (%s)",
                    mod->op, mod->multi_name, mod->iop_order,imgid, msg);
         }
@@ -2540,7 +2559,7 @@ gboolean dt_ioppr_check_iop_order_ext(dt_develop_t *dev,
         iop_order_ok = FALSE;
         dt_print(DT_DEBUG_ALWAYS,
                  "[dt_ioppr_check_iop_order] history module not"
-                 " used but enabled!! %s %s(%d) image %i (%s)",
+                 " used but enabled! %s %s(%d) image %i (%s)",
                  hist->op_name, hist->multi_name, hist->iop_order, imgid, msg);
       }
       if(hist->multi_priority == 0)

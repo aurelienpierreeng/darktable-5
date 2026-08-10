@@ -1,6 +1,6 @@
 /* --------------------------------------------------------------------------
     This file is part of darktable,
-    Copyright (C) 2012-2024 darktable developers.
+    Copyright (C) 2012-2026 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -40,16 +40,9 @@ enum border_mode
  * unnecessary modes in clip for resampling codepath*/
 #define RESAMPLING_BORDER_MODE BORDER_REPLICATE
 
-/* Supporting them all might be overkill, let the compiler trim all
- * unnecessary modes in interpolation codepath */
-#define INTERPOLATION_BORDER_MODE BORDER_MIRROR
-
 // Defines the maximum kernel half length
 // !! Make sure to sync this with the filter array !!
 #define MAX_HALF_FILTER_WIDTH 3
-
-// Add *verbose* (like one msg per pixel out) debug message to stderr
-#define DEBUG_PRINT_VERBOSE 0
 
 /* --------------------------------------------------------------------------
  * Debug helpers
@@ -270,8 +263,7 @@ static float _maketaps_bicubic(float *taps,
 
 #define DT_LANCZOS_EPSILON (1e-9f)
 
-#if 0
-// Reference version left here for ... documentation
+/* Reference version left here for documentation
 static inline float
 lanczos(const float width, const float t)
 {
@@ -291,9 +283,8 @@ lanczos(const float width, const float t)
   }
   return r;
 }
-#endif
 
-/* Fast lanczos version, no calls to math.h functions, too accurate, too slow
+ * Fast lanczos version, no calls to math.h functions, too accurate, too slow
  *
  * Based on a forum entry at
  * http://devmaster.net/forums/topic/4648-fast-and-accurate-sinecosine/
@@ -307,7 +298,8 @@ lanczos(const float width, const float t)
  *
  * Of course we know that lanczos func will only be called for
  * the range -width < t < width so we can additionally avoid the
- * range check.  */
+ * range check.
+*/
 
 static float _maketaps_lanczos(float *taps,
                                const size_t num_taps,
@@ -340,7 +332,7 @@ static float _maketaps_lanczos(float *taps,
     dt_aligned_pixel_t sign;
     for_four_channels(c)
     {
-      int a = (int)vt[c];
+      const int a = (int)vt[c];
       r[c] = vt[c] - (float)a;
       sign[c] = (a & 1) ? -1.0f : 1.0f;
     }
@@ -392,7 +384,7 @@ static float _maketaps_lanczos(float *taps,
  * of this filter list. Otherwise bad things will happen
  * !!! !!! !!!
  */
-static const struct dt_interpolation dt_interpolator[] = {
+static const dt_interpolation_t dt_interpolator[] = {
   {.id = DT_INTERPOLATION_BILINEAR,
    .name = "bilinear",
    .width = 1,
@@ -419,7 +411,7 @@ static const struct dt_interpolation dt_interpolator[] = {
  * Kernel utility methods
  * ------------------------------------------------------------------------*/
 
-static inline float _compute_upsampling_kernel(const struct dt_interpolation *itor,
+static inline float _compute_upsampling_kernel(const dt_interpolation_t *itor,
                                                float *kernel,
                                                int *first,
                                                float t)
@@ -429,7 +421,7 @@ static inline float _compute_upsampling_kernel(const struct dt_interpolation *it
   // yielding an incorrect result for the slightly-negative positions
   // that can occur at the top and left edges when doing perspective
   // correction
-  int f = (int)floorf(t) - itor->width + 1;
+  const int f = (int)floorf(t) - itor->width + 1;
   if(first)
   {
     *first = f;
@@ -454,7 +446,7 @@ static inline float _compute_upsampling_kernel(const struct dt_interpolation *it
  * @param first [out] index of the first sample for which the kernel is to be applied
  * @param outoinratio [in] "out samples" over "in samples" ratio
  * @param xout [in] Output coordinate */
-static inline void _compute_downsampling_kernel(const struct dt_interpolation *itor,
+static inline void _compute_downsampling_kernel(const dt_interpolation_t *itor,
                                                 int *taps,
                                                 int *first,
                                                 float *kernel,
@@ -474,13 +466,13 @@ static inline void _compute_downsampling_kernel(const struct dt_interpolation *i
   }
 
   // Compute first interpolator parameter
-  float t = xin * outoinratio - (float)xout;
+  const float t = xin * outoinratio - (float)xout;
 
   // Compute all filter taps
-  int num_taps = *taps = (int)((w - t) / outoinratio);
+  const int num_taps = *taps = (int)((w - t) / outoinratio);
   itor->maketaps(kernel, num_taps, itor->width, t, outoinratio);
   // compute the kernel norm if requested
-  if (norm)
+  if(norm)
   {
     float n  = 0.0f;
     for(size_t i = 0; i < num_taps; i++)
@@ -490,12 +482,24 @@ static inline void _compute_downsampling_kernel(const struct dt_interpolation *i
 }
 
 /* --------------------------------------------------------------------------
- * Sample interpolation function (see usage in iop/lens.c and iop/clipping.c)
- * ------------------------------------------------------------------------*/
+  Sample interpolation function (see usage in iop/lens.c and mask distortions)
+  using INTERPOLATION_BORDER_MODE = BORDER_MIRROR
+  ---------------------------------------------------------------------------
+*/
 
 #define MAX_KERNEL_REQ ((2 * (MAX_HALF_FILTER_WIDTH) + 3) & (~3))
 
-float dt_interpolation_compute_sample(const struct dt_interpolation *itor,
+static inline ssize_t _mirror(ssize_t i, const ssize_t max)
+{
+  if(i < 0)
+    i = -i;
+  else if(i > max)
+    i = max - (i - max);
+
+  return i;
+}
+
+float dt_interpolation_compute_sample(const dt_interpolation_t *itor,
                                       const float *in,
                                       const float x,
                                       const float y,
@@ -510,28 +514,30 @@ float dt_interpolation_compute_sample(const struct dt_interpolation *itor,
   float DT_ALIGNED_ARRAY kernelv[MAX_KERNEL_REQ];
 
   // Compute both horizontal and vertical kernels
-  float normh = _compute_upsampling_kernel(itor, kernelh, NULL, x);
-  float normv = _compute_upsampling_kernel(itor, kernelv, NULL, y);
+  const float normh = _compute_upsampling_kernel(itor, kernelh, NULL, x);
+  const float normv = _compute_upsampling_kernel(itor, kernelv, NULL, y);
+  // Precompute the inverse of the filter norm for later use
+  const float oonorm = (1.f / (normh * normv));
 
   int ix = (int)x;
   int iy = (int)y;
 
+  float s = 0.0f;
   /* Now 2 cases, the pixel + filter width goes outside the image
    * in that case we have to use index clipping to keep all reads
    * in the input image (slow path) or we are sure it won't fall
    * outside and can do more simple code */
-  float r;
-  if(ix >= (itor->width - 1) && iy >= (itor->width - 1) && ix < (width - itor->width)
-     && iy < (height - itor->width))
+  if(ix >= (itor->width - 1)
+      && iy >= (itor->width - 1)
+      && ix < (width - itor->width)
+      && iy < (height - itor->width))
   {
     // Inside image boundary case
-
     // Go to top left pixel
     in = (float *)in + linestride * iy + ix * samplestride;
     in = in - (itor->width - 1) * (samplestride + linestride);
 
     // Apply the kernel
-    float s = 0.f;
     for(int i = 0; i < 2 * itor->width; i++)
     {
       float h = 0.0f;
@@ -542,59 +548,38 @@ float dt_interpolation_compute_sample(const struct dt_interpolation *itor,
       s += kernelv[i] * h;
       in += linestride;
     }
-    r = fmaxf(0.0f, s / (normh * normv));
   }
   else if(ix >= 0 && iy >= 0 && ix < width && iy < height)
   {
     // At least a valid coordinate
-
     // Point to the upper left pixel index wise
     iy -= itor->width - 1;
     ix -= itor->width - 1;
 
-    static const enum border_mode bordermode = INTERPOLATION_BORDER_MODE;
-    assert(bordermode != BORDER_CLAMP); // XXX in clamp mode, norms would be wrong
-
-    int xtap_first;
-    int xtap_last;
-    _prepare_tap_boundaries(&xtap_first, &xtap_last,
-                           bordermode, 2 * itor->width, ix, width);
-
-    int ytap_first;
-    int ytap_last;
-    _prepare_tap_boundaries(&ytap_first, &ytap_last,
-                           bordermode, 2 * itor->width, iy, height);
-
     // Apply the kernel
-    float s = 0.f;
-    for(ssize_t i = ytap_first; i < ytap_last; i++)
+    for(ssize_t i = 0; i < 2 * itor->width; i++)
     {
-      const ssize_t clip_y = _clip(iy + i, 0, height - 1, bordermode);
+      const ssize_t clip_y = _mirror(iy + i, height - 1);
       float h = 0.0f;
-      for(ssize_t j = xtap_first; j < xtap_last; j++)
+      for(ssize_t j = 0; j < 2 * itor->width; j++)
       {
-        const ssize_t clip_x = _clip(ix + j, 0, width - 1, bordermode);
+        const ssize_t clip_x = _mirror(ix + j, width - 1);
         const float *ipixel = in + clip_y * linestride + clip_x * samplestride;
         h += kernelh[j] * ipixel[0];
       }
       s += kernelv[i] * h;
     }
-
-    r = fmaxf(0.0f, s / (normh * normv));
   }
-  else
-  {
-    // invalid coordinate
-    r = 0.0f;
-  }
-  return r;
+  return s * oonorm; // if called for masks make sure to CLIP to avoid interpolator under/overshoots
 }
 
 /* --------------------------------------------------------------------------
- * Pixel interpolation function (see usage in iop/lens.c and iop/clipping.c)
- * ------------------------------------------------------------------------*/
+ * Pixel interpolation function (see usage in ashift.c)
+  using INTERPOLATION_BORDER_MODE = BORDER_MIRROR
+  ---------------------------------------------------------------------------
+*/
 
-void dt_interpolation_compute_pixel4c(const struct dt_interpolation *itor,
+void dt_interpolation_compute_pixel4c(const dt_interpolation_t *itor,
                                       const float *in,
                                       float *out,
                                       const float x,
@@ -610,8 +595,8 @@ void dt_interpolation_compute_pixel4c(const struct dt_interpolation *itor,
   float DT_ALIGNED_ARRAY kernelv[MAX_KERNEL_REQ];
 
   // Compute both horizontal and vertical kernels
-  float normh = _compute_upsampling_kernel(itor, kernelh, NULL, x);
-  float normv = _compute_upsampling_kernel(itor, kernelv, NULL, y);
+  const float normh = _compute_upsampling_kernel(itor, kernelh, NULL, x);
+  const float normv = _compute_upsampling_kernel(itor, kernelv, NULL, y);
 
   // Precompute the inverse of the filter norm for later use
   const float oonorm = (1.f / (normh * normv));
@@ -629,7 +614,6 @@ void dt_interpolation_compute_pixel4c(const struct dt_interpolation *itor,
     && iy < (height - itor->width))
   {
     // Inside image boundary case
-
     // Go to top left pixel
     in = (float *)in + linestride * iy + ix * 4;
     in = in - (itor->width - 1) * (4 + linestride);
@@ -655,39 +639,25 @@ void dt_interpolation_compute_pixel4c(const struct dt_interpolation *itor,
     }
 
     for_each_channel(c,aligned(out))
-      out[c] = fmaxf(0.0f, oonorm * pixel[c]);
+      out[c] = pixel[c] * oonorm;
   }
   else if(ix >= 0 && iy >= 0 && ix < width && iy < height)
   {
     // At least a valid coordinate
-
     // Point to the upper left pixel index wise
     iy -= itor->width - 1;
     ix -= itor->width - 1;
 
-    static const enum border_mode bordermode = INTERPOLATION_BORDER_MODE;
-    assert(bordermode != BORDER_CLAMP); // XXX in clamp mode, norms would be wrong
-
-    int xtap_first;
-    int xtap_last;
-    _prepare_tap_boundaries(&xtap_first, &xtap_last,
-                           bordermode, 2 * itor->width, ix, width);
-
-    int ytap_first;
-    int ytap_last;
-    _prepare_tap_boundaries(&ytap_first, &ytap_last,
-                           bordermode, 2 * itor->width, iy, height);
-
     // Apply the kernel
     dt_aligned_pixel_t pixel = { 0.0f, 0.0f, 0.0f, 0.0f };
-    for(ssize_t i = ytap_first; i < ytap_last; i++)
+    for(ssize_t i = 0; i < 2 * itor->width; i++)
     {
-      const ssize_t clip_y = _clip(iy + i, 0, height - 1, bordermode);
+      const ssize_t clip_y = _mirror(iy + i, height - 1);
       dt_aligned_pixel_t h = { 0.0f, 0.0f, 0.0f, 0.0f };
       const float *ipixel = in + clip_y * linestride;
-      for(ssize_t j = xtap_first; j < xtap_last; j++)
+      for(ssize_t j = 0; j < 2 * itor->width; j++)
       {
-        const ssize_t clip_x = _clip(ix + j, 0, width - 1, bordermode);
+        const ssize_t clip_x = _mirror(ix + j, width - 1);
         dt_aligned_pixel_t inpx;
         copy_pixel(inpx, ipixel + 4 * clip_x);
         const float kern = kernelh[j];
@@ -699,7 +669,7 @@ void dt_interpolation_compute_pixel4c(const struct dt_interpolation *itor,
     }
 
     for_each_channel(c,aligned(out))
-      out[c] = fmaxf(0.0f, oonorm * pixel[c]);
+      out[c] = pixel[c] * oonorm;
   }
   else
   {
@@ -713,9 +683,9 @@ void dt_interpolation_compute_pixel4c(const struct dt_interpolation *itor,
  * Interpolation factory
  * ------------------------------------------------------------------------*/
 
-const struct dt_interpolation *dt_interpolation_new(enum dt_interpolation_type type)
+const dt_interpolation_t *dt_interpolation_new(enum dt_interpolation_type type)
 {
-  const struct dt_interpolation *itor = NULL;
+  const dt_interpolation_t *itor = NULL;
 
   if(type == DT_INTERPOLATION_USERPREF)
   {
@@ -823,11 +793,10 @@ const struct dt_interpolation *dt_interpolation_new(enum dt_interpolation_type t
  * out position meta[3*out]
  * @return FALSE for success, TRUE for failure
  */
-static gboolean _prepare_resampling_plan(const struct dt_interpolation *itor,
+static gboolean _prepare_resampling_plan(const dt_interpolation_t *itor,
                                          const int in,
-                                         const int in_x0,
                                          const int out,
-                                         const int out_x0,
+                                         const int shift,
                                          const float scale,
                                          int **plength,
                                          float **pkernel,
@@ -910,11 +879,11 @@ static gboolean _prepare_resampling_plan(const struct dt_interpolation *itor,
       }
 
       // Projected position in input samples
-      float fx = (float)(out_x0 + x) / scale;
+      const float fx = (float)(shift + x) / scale;
 
       // Compute the filter kernel at that position
       int first;
-      (void)_compute_upsampling_kernel(itor, scratchpad, &first, fx);
+      _compute_upsampling_kernel(itor, scratchpad, &first, fx);
 
       /* Check lower and higher bound pixel index and skip as many pixels as
        * necessary to fall into range */
@@ -963,7 +932,7 @@ static gboolean _prepare_resampling_plan(const struct dt_interpolation *itor,
       // Compute downsampling kernel centered on output position
       int taps;
       int first;
-      _compute_downsampling_kernel(itor, &taps, &first, scratchpad, NULL, scale, out_x0 + x);
+      _compute_downsampling_kernel(itor, &taps, &first, scratchpad, NULL, scale, shift + x);
 
       /* Check lower and higher bound pixel index and skip as many pixels as
        * necessary to fall into range */
@@ -1007,12 +976,21 @@ static gboolean _prepare_resampling_plan(const struct dt_interpolation *itor,
   return FALSE;
 }
 
-static void _interpolation_resample_plain(const struct dt_interpolation *itor,
-                                          float *out,
-                                          const dt_iop_roi_t *const roi_out,
-                                          const float *const in,
-                                          const dt_iop_roi_t *const roi_in)
+/** Applies resampling (re-scaling) on *full* input and output buffers.
+ *  roi_in and roi_out define the part of the buffers that is affected.
+ */
+void dt_interpolation_resample(const dt_interpolation_t *itor,
+                               float *out,
+                               const dt_iop_roi_t *const roi_out,
+                               const float *const in,
+                               const dt_iop_roi_t *const roi_in)
 {
+  if(out == NULL)
+  {
+    dt_print(DT_DEBUG_ALWAYS, "[dt_interpolation_resample] no valid output buffer");
+    return;
+  }
+
   int *hindex = NULL;
   int *hlength = NULL;
   float *hkernel = NULL;
@@ -1021,25 +999,42 @@ static void _interpolation_resample_plain(const struct dt_interpolation *itor,
   float *vkernel = NULL;
   int *vmeta = NULL;
 
-  const int32_t in_stride_floats = roi_in->width * 4;
-  const int32_t out_stride_floats = roi_out->width * 4;
+  const size_t in_stride_floats = roi_in->width * 4;
+  const size_t out_stride_floats = roi_out->width * 4;
+
+  const int dx = MAX(0, roi_out->x);
+  const int dy = MAX(0, roi_out->y);
+  const gboolean wd_fit = roi_in->width >= (roi_out->width - dx);
+  const gboolean ht_fit = roi_in->height >= (roi_out->height - dy);
+  const gboolean copymode = roi_out->scale == 1.0f;
 
   dt_print_pipe(DT_DEBUG_PIPE | DT_DEBUG_VERBOSE,
-                "resample_plain", NULL, NULL, DT_DEVICE_CPU, roi_in, roi_out, "%s",itor->name);
+                copymode ? "resample_plain 1:1" : "resample_plain",
+                NULL, NULL, DT_DEVICE_CPU, roi_in, roi_out, "%s",
+                !copymode ? itor->name : (wd_fit && ht_fit) ? "inside" : "expanded");
+
   dt_times_t start = { 0 }, mid = { 0 };
   dt_get_perf_times(&start);
 
   // Fast code path for 1:1 copy, only cropping area can change
-  if(roi_out->scale == 1.f)
+  if(copymode)
   {
-    const int x0 = roi_out->x * 4 * sizeof(float);
+    const size_t x0 = sizeof(float) * dx * 4;
+    const size_t cp_width = sizeof(float) * 4 * MAX(0, MIN(roi_out->width, roi_in->width - dx));
+    const size_t owidth = out_stride_floats * sizeof(float);
 
     DT_OMP_FOR()
-    for(int y = 0; y < roi_out->height; y++)
+    for(int row = 0; row < roi_out->height; row++)
     {
-      memcpy((char *)out + (size_t)out_stride_floats * sizeof(float) * y,
-             (char *)in + (size_t)in_stride_floats * sizeof(float) * (y + roi_out->y) + x0,
-             out_stride_floats * sizeof(float));
+      uint8_t *o = (uint8_t *)out + owidth * row;
+      if((row + dy) < roi_in->height)
+      {
+        memcpy(o, (uint8_t *)in + in_stride_floats * sizeof(float) * (row + dy) + x0, cp_width);
+        if(!wd_fit)
+          memset(o + cp_width, 0, owidth - cp_width);
+      }
+      else
+        memset(o, 0, owidth);
     }
 
     dt_show_times_f(&start, "[resample_plain]", "1:1 copy/crop of %dx%d pixels",
@@ -1051,24 +1046,19 @@ static void _interpolation_resample_plain(const struct dt_interpolation *itor,
   // Generic non 1:1 case... much more complicated :D
 
   // Prepare resampling plans once and for all
-  if(_prepare_resampling_plan(itor, roi_in->width, roi_in->x,
-                              roi_out->width, roi_out->x, roi_out->scale,
+  if(_prepare_resampling_plan(itor, roi_in->width, roi_out->width, dx, roi_out->scale,
                               &hlength, &hkernel, &hindex, NULL))
     goto exit;
 
-  if(_prepare_resampling_plan(itor, roi_in->height, roi_in->y,
-                              roi_out->height, roi_out->y, roi_out->scale,
+  if(_prepare_resampling_plan(itor, roi_in->height, roi_out->height, dy, roi_out->scale,
                               &vlength, &vkernel, &vindex, &vmeta))
     goto exit;
 
   dt_get_perf_times(&mid);
 
-  const size_t height = roi_out->height;
-  const size_t width = roi_out->width;
-
   // Process each output line
   DT_OMP_FOR()
-  for(size_t oy = 0; oy < height; oy++)
+  for(size_t oy = 0; oy < (size_t)roi_out->height; oy++)
   {
     // Initialize column resampling indexes
     int vlidx = vmeta[3 * oy + 0]; // V(ertical) L(ength) I(n)d(e)x
@@ -1080,21 +1070,21 @@ static void _interpolation_resample_plain(const struct dt_interpolation *itor,
     int hkidx = 0; // H(orizontal) K(ernel) I(n)d(e)x
 
     // Number of lines contributing to the output line
-    int vl = vlength[vlidx++]; // V(ertical) L(ength)
+    const int vl = vlength[vlidx++]; // V(ertical) L(ength)
 
     // Process each output column
-    for(size_t ox = 0; ox < width; ox++)
+    for(size_t ox = 0; ox < (size_t)roi_out->width; ox++)
     {
       // This will hold the resulting pixel
       dt_aligned_pixel_t vs = { 0.0f, 0.0f, 0.0f, 0.0f };
 
       // Number of horizontal samples contributing to the output
-      int hl = hlength[hlidx++]; // H(orizontal) L(ength)
+      const int hl = hlength[hlidx++]; // H(orizontal) L(ength)
 
       for(size_t iy = 0; iy < vl; iy++)
       {
         // This is our input line
-        size_t baseidx_vindex = (size_t)vindex[viidx++] * in_stride_floats;
+        const size_t baseidx_vindex = (size_t)vindex[viidx++] * in_stride_floats;
 
         dt_aligned_pixel_t vhs = { 0.0f, 0.0f, 0.0f, 0.0f };
 
@@ -1119,13 +1109,7 @@ static void _interpolation_resample_plain(const struct dt_interpolation *itor,
 
       // Output pixel is ready
       const size_t baseidx = (size_t)oy * out_stride_floats + (size_t)ox * 4;
-
-      // Clip negative RGB that may be produced by Lanczos undershooting
-      // Negative RGB are invalid values no matter the RGB space (light is positive)
-      dt_aligned_pixel_t pixel;
-      for_each_channel(c, aligned(vs:16))
-        pixel[c] = MAX(vs[c], 0.f);
-      copy_pixel_nontemporal(out + baseidx, pixel);
+      copy_pixel_nontemporal(out + baseidx, vs);
 
       // Reset vertical resampling context
       viidx -= vl;
@@ -1146,30 +1130,13 @@ exit:
   _show_2_times(&start, &mid, "resample_plain");
 }
 
-/** Applies resampling (re-scaling) on *full* input and output buffers.
- *  roi_in and roi_out define the part of the buffers that is affected.
- */
-void dt_interpolation_resample(const struct dt_interpolation *itor,
-                               float *out,
-                               const dt_iop_roi_t *const roi_out,
-                               const float *const in,
-                               const dt_iop_roi_t *const roi_in)
-{
-  if(out == NULL)
-  {
-    dt_print(DT_DEBUG_ALWAYS, "[dt_interpolation_resample] no valid output buffer");
-    return;
-  }
-
-  return _interpolation_resample_plain(itor, out, roi_out, in, roi_in);
-}
 
 /** Applies resampling (re-scaling) on a specific region-of-interest
  *  of an image. The input and output buffers hold exactly those
  *  roi's. roi_in and roi_out define the relative positions of the
  *  roi's within the full input and output image, respectively.
  */
-void dt_interpolation_resample_roi(const struct dt_interpolation *itor,
+void dt_interpolation_resample_roi(const dt_interpolation_t *itor,
                                    float *out,
                                    const dt_iop_roi_t *const roi_out,
                                    const float *const in,
@@ -1190,8 +1157,8 @@ dt_interpolation_cl_global_t *dt_interpolation_init_cl_global()
   dt_interpolation_cl_global_t *g = malloc(sizeof(dt_interpolation_cl_global_t));
 
   const int program = 2; // basic.cl, from programs.conf
-  g->kernel_interpolation_resample =
-    dt_opencl_create_kernel(program, "interpolation_resample");
+  g->kernel_interpolation_resample = dt_opencl_create_kernel(program, "interpolation_resample");
+  g->kernel_copy_resample = dt_opencl_create_kernel(program, "interpolation_copy");
   return g;
 }
 
@@ -1200,10 +1167,11 @@ void dt_interpolation_free_cl_global(dt_interpolation_cl_global_t *g)
   if(!g) return;
   // destroy kernels
   dt_opencl_free_kernel(g->kernel_interpolation_resample);
+  dt_opencl_free_kernel(g->kernel_copy_resample);
   free(g);
 }
 
-static uint32_t roundToNextPowerOfTwo(uint32_t x)
+static uint32_t _roundToNextPowerOfTwo(uint32_t x)
 {
   x--;
   x |= x >> 1;
@@ -1218,7 +1186,7 @@ static uint32_t roundToNextPowerOfTwo(uint32_t x)
 /** Applies resampling (re-scaling) on *full* input and output buffers.
  *  roi_in and roi_out define the part of the buffers that is affected.
  */
-int dt_interpolation_resample_cl(const struct dt_interpolation *itor,
+int dt_interpolation_resample_cl(const dt_interpolation_t *itor,
                                  const int devid,
                                  cl_mem dev_out,
                                  const dt_iop_roi_t *const roi_out,
@@ -1245,20 +1213,40 @@ int dt_interpolation_resample_cl(const struct dt_interpolation *itor,
   cl_mem dev_vkernel = NULL;
   cl_mem dev_vmeta = NULL;
 
+  const int dx = MAX(0, roi_out->x);
+  const int dy = MAX(0, roi_out->y);
+  const int width = roi_out->width;
+  const int height = roi_out->height;
+  const gboolean wd_fit = roi_in->width >= (width - dx);
+  const gboolean ht_fit = roi_in->height >= (height - dy);
+  const gboolean copymode = roi_out->scale == 1.0f;
+
   dt_print_pipe(DT_DEBUG_PIPE | DT_DEBUG_VERBOSE,
-                "resample", NULL, NULL, devid, roi_in, roi_out, "%s", itor->name);
+                copymode ? "resample 1:1" : "resample",
+                NULL, NULL, devid, roi_in, roi_out, "%s",
+                !copymode ? itor->name : (wd_fit && ht_fit) ? "inside" : "expanded");
+
   dt_times_t start = { 0 }, mid = { 0 };
   dt_get_perf_times(&start);
 
   // Fast code path for 1:1 copy, only cropping area can change
-  if(roi_out->scale == 1.f)
+  if(copymode)
   {
-    size_t iorigin[] = { roi_out->x, roi_out->y, 0 };
-    size_t oorigin[] = { 0, 0, 0 };
-    size_t region[] = { roi_out->width, roi_out->height, 1 };
+    if(wd_fit && ht_fit)
+    {
+      const size_t iorigin[2] = { dx, dy };
+      const size_t region[2] = { width, height };
+      // copy original input from dev_in -> dev_out as starting point
+      err = dt_opencl_enqueue_copy_image(devid, dev_in, dev_out, iorigin, CLIMG_ORIGIN, region);
+    }
+    else
+    {
+      err = dt_opencl_enqueue_kernel_2d_args(devid, darktable.opencl->interpolation->kernel_copy_resample, width, height,
+            CLARG(dev_in), CLARG(dev_out), CLARG(width), CLARG(height),
+            CLARG(roi_in->width), CLARG(roi_in->height),
+            CLARG(dx), CLARG(dy));
+    }
 
-    // copy original input from dev_in -> dev_out as starting point
-    err = dt_opencl_enqueue_copy_image(devid, dev_in, dev_out, iorigin, oorigin, region);
     if(err != CL_SUCCESS) goto error;
 
     dt_show_times_f(&start, "[resample_cl]", "1:1 copy/crop of %dx%d pixels",
@@ -1270,32 +1258,28 @@ int dt_interpolation_resample_cl(const struct dt_interpolation *itor,
   // Generic non 1:1 case... much more complicated :D
 
   // Prepare resampling plans once and for all
-  if(_prepare_resampling_plan(itor, roi_in->width, roi_in->x,
-                              roi_out->width, roi_out->x, roi_out->scale,
+  if(_prepare_resampling_plan(itor, roi_in->width, width, dx, roi_out->scale,
                               &hlength, &hkernel, &hindex, &hmeta))
     goto error;
 
-  if(_prepare_resampling_plan(itor, roi_in->height, roi_in->y,
-                              roi_out->height, roi_out->y, roi_out->scale,
+  if(_prepare_resampling_plan(itor, roi_in->height, height, dy, roi_out->scale,
                               &vlength, &vkernel, &vindex, &vmeta))
     goto error;
 
   dt_get_perf_times(&mid);
 
   int hmaxtaps = -1, vmaxtaps = -1;
-  for(int k = 0; k < roi_out->width; k++) hmaxtaps = MAX(hmaxtaps, hlength[k]);
-  for(int k = 0; k < roi_out->height; k++) vmaxtaps = MAX(vmaxtaps, vlength[k]);
+  for(int k = 0; k < width; k++) hmaxtaps = MAX(hmaxtaps, hlength[k]);
+  for(int k = 0; k < height; k++) vmaxtaps = MAX(vmaxtaps, vlength[k]);
 
   // strategy: process image column-wise (local[0] = 1). For each row generate
   // a number of parallel work items each taking care of one horizontal convolution,
   // then sum over work items to do the vertical convolution
 
   const int kernel = darktable.opencl->interpolation->kernel_interpolation_resample;
-  const int width = roi_out->width;
-  const int height = roi_out->height;
 
   // make sure blocksize is not too large
-  const int taps = roundToNextPowerOfTwo(vmaxtaps);
+  const int taps = _roundToNextPowerOfTwo(vmaxtaps);
   // the number of work items per row rounded up to a power of 2
   // (for quick recursive reduction)
 
@@ -1312,7 +1296,7 @@ int dt_interpolation_resample_cl(const struct dt_interpolation *itor,
           .sizex = 1,
           .sizey = (1 << 16) * taps };
 
-  if(dt_opencl_local_buffer_opt(devid, kernel, &locopt))
+  if(dt_opencl_local_buffer_opt(devid, kernel, &locopt) == CL_SUCCESS)
     vblocksize = locopt.sizey;
   else
     vblocksize = 1;
@@ -1327,57 +1311,47 @@ int dt_interpolation_resample_cl(const struct dt_interpolation *itor,
     goto error;
   }
 
-  size_t sizes[3] = { ROUNDUPDWD(width, devid), ROUNDUP(height * taps, vblocksize), 1 };
-  size_t local[3] = { 1, vblocksize, 1 };
+  const size_t sizes[2] = { ROUNDUPDWD(width, devid), ROUNDUP(height * taps, vblocksize) };
+  const size_t local[2] = { 1, vblocksize };
 
   // store resampling plan to device memory hindex, vindex, hkernel,
   // vkernel: (v|h)maxtaps might be too small, so store a bit more
   // than needed
   err = CL_MEM_OBJECT_ALLOCATION_FAILURE;
 
-  dev_hindex = dt_opencl_copy_host_to_device_constant
-    (devid, sizeof(int) * width * (hmaxtaps + 1), hindex);
+  dev_hindex = dt_opencl_copy_host_to_device_constant(devid, sizeof(int) * width * (hmaxtaps + 1), hindex);
   if(dev_hindex == NULL) goto error;
 
-  dev_hlength = dt_opencl_copy_host_to_device_constant
-    (devid, sizeof(int) * width, hlength);
+  dev_hlength = dt_opencl_copy_host_to_device_constant(devid, sizeof(int) * width, hlength);
   if(dev_hlength == NULL) goto error;
 
-  dev_hkernel
-      = dt_opencl_copy_host_to_device_constant
-    (devid, sizeof(float) * width * (hmaxtaps + 1), hkernel);
+  dev_hkernel = dt_opencl_copy_host_to_device_constant(devid, sizeof(float) * width * (hmaxtaps + 1), hkernel);
   if(dev_hkernel == NULL) goto error;
 
-  dev_hmeta = dt_opencl_copy_host_to_device_constant
-    (devid, sizeof(int) * width * 3, hmeta);
+  dev_hmeta = dt_opencl_copy_host_to_device_constant(devid, sizeof(int) * width * 3, hmeta);
   if(dev_hmeta == NULL) goto error;
 
-  dev_vindex = dt_opencl_copy_host_to_device_constant
-    (devid, sizeof(int) * height * (vmaxtaps + 1), vindex);
+  dev_vindex = dt_opencl_copy_host_to_device_constant(devid, sizeof(int) * height * (vmaxtaps + 1), vindex);
   if(dev_vindex == NULL) goto error;
 
-  dev_vlength = dt_opencl_copy_host_to_device_constant
-    (devid, sizeof(int) * height, vlength);
+  dev_vlength = dt_opencl_copy_host_to_device_constant(devid, sizeof(int) * height, vlength);
   if(dev_vlength == NULL) goto error;
 
-  dev_vkernel
-      = dt_opencl_copy_host_to_device_constant
-    (devid, sizeof(float) * height * (vmaxtaps + 1), vkernel);
+  dev_vkernel = dt_opencl_copy_host_to_device_constant(devid, sizeof(float) * height * (vmaxtaps + 1), vkernel);
   if(dev_vkernel == NULL) goto error;
 
-  dev_vmeta = dt_opencl_copy_host_to_device_constant
-    (devid, sizeof(int) * height * 3, vmeta);
+  dev_vmeta = dt_opencl_copy_host_to_device_constant(devid, sizeof(int) * height * 3, vmeta);
   if(dev_vmeta == NULL) goto error;
 
-  dt_opencl_set_kernel_args(devid, kernel, 0, CLARG(dev_in), CLARG(dev_out),
-                            CLARG(width), CLARG(height),
-                            CLARG(dev_hmeta), CLARG(dev_vmeta), CLARG(dev_hlength),
-                            CLARG(dev_vlength), CLARG(dev_hindex),
-                            CLARG(dev_vindex), CLARG(dev_hkernel), CLARG(dev_vkernel),
-                            CLARG(hmaxtaps), CLARG(taps), CLLOCAL(hmaxtaps * sizeof(float)),
-                            CLLOCAL(hmaxtaps * sizeof(int)),
-                            CLLOCAL(vblocksize * 4 * sizeof(float)));
-  err = dt_opencl_enqueue_kernel_2d_with_local(devid, kernel, sizes, local);
+  err = dt_opencl_enqueue_kernel_2d_local_args(devid, kernel, sizes, local,
+            CLARG(dev_in), CLARG(dev_out),
+            CLARG(width), CLARG(height),
+            CLARG(dev_hmeta), CLARG(dev_vmeta), CLARG(dev_hlength),
+            CLARG(dev_vlength), CLARG(dev_hindex),
+            CLARG(dev_vindex), CLARG(dev_hkernel), CLARG(dev_vkernel),
+            CLARG(hmaxtaps), CLARG(taps), CLLOCAL(hmaxtaps * sizeof(float)),
+            CLLOCAL(hmaxtaps * sizeof(int)),
+            CLLOCAL(vblocksize * 4 * sizeof(float)));
 
 error:
   if(err == CL_SUCCESS)
@@ -1404,7 +1378,7 @@ error:
  *  roi's. roi_in and roi_out define the relative positions of the
  *  roi's within the full input and output image, respectively.
  */
-int dt_interpolation_resample_roi_cl(const struct dt_interpolation *itor,
+int dt_interpolation_resample_roi_cl(const dt_interpolation_t *itor,
                                      const int devid,
                                      cl_mem dev_out,
                                      const dt_iop_roi_t *const roi_out,
@@ -1421,11 +1395,14 @@ int dt_interpolation_resample_roi_cl(const struct dt_interpolation *itor,
 }
 #endif
 
-static void _interpolation_resample_1c_plain(const struct dt_interpolation *itor,
-                                             float *out,
-                                             const dt_iop_roi_t *const roi_out,
-                                             const float *const in,
-                                             const dt_iop_roi_t *const roi_in)
+/** Applies resampling (re-scaling) on *full* input and output buffers.
+ *  roi_in and roi_out define the part of the buffers that is affected.
+ */
+void dt_interpolation_resample_mask(const dt_interpolation_t *itor,
+                                  float *out,
+                                  const dt_iop_roi_t *const roi_out,
+                                  const float *const in,
+                                  const dt_iop_roi_t *const roi_in)
 {
   int *hindex = NULL;
   int *hlength = NULL;
@@ -1435,43 +1412,64 @@ static void _interpolation_resample_1c_plain(const struct dt_interpolation *itor
   float *vkernel = NULL;
   int *vmeta = NULL;
 
-  dt_print_pipe(DT_DEBUG_PIPE | DT_DEBUG_VERBOSE,
-      "resample_1c_plain", NULL, NULL, DT_DEVICE_CPU, roi_in, roi_out, "%s", itor->name);
   dt_times_t start = { 0 }, mid = { 0 };
   dt_get_perf_times(&start);
 
   const size_t out_stride = roi_out->width * sizeof(float);
   const size_t in_stride = roi_in->width * sizeof(float);
 
+  const int dx = MAX(0, roi_out->x);
+  const int dy = MAX(0, roi_out->y);
+  const gboolean wd_fit = roi_in->width >= (roi_out->width - dx);
+  const gboolean ht_fit = roi_in->height >= (roi_out->height - dy);
+  const gboolean copymode = roi_out->scale == 1.0f;
+
+  dt_print_pipe(DT_DEBUG_PIPE | DT_DEBUG_VERBOSE,
+                copymode ? "resample mask 1:1" : "resample mask",
+                NULL, NULL, DT_DEVICE_CPU, roi_in, roi_out, "%s",
+                !copymode ? itor->name : (wd_fit && ht_fit) ? "inside" : "expanded");
+
   // Fast code path for 1:1 copy, only cropping area can change
-  if(roi_out->scale == 1.f)
+  if(copymode)
   {
-    const int x0 = roi_out->x * sizeof(float);
+    const size_t x0 = sizeof(float) * dx;
+    const size_t cp_width = sizeof(float) * MAX(0, MIN(roi_out->width, roi_in->width - dx));
+
     DT_OMP_FOR()
-    for(int y = 0; y < roi_out->height; y++)
+    for(int row = 0; row < roi_out->height; row++)
     {
-      float *i = (float *)((char *)in + in_stride * (y + roi_out->y) + x0);
-      float *o = (float *)((char *)out + out_stride * y);
-      memcpy(o, i, out_stride);
+      uint8_t *o = (uint8_t *)out + out_stride * row;
+      if((row + dy) < roi_in->height)
+      {
+        memcpy(o, (uint8_t *)in + in_stride * (row + dy) + x0, cp_width);
+        if(!wd_fit)
+          memset(o + cp_width, 0, out_stride - cp_width);
+      }
+      else
+        memset(o, 0, out_stride);
     }
-    dt_show_times_f(&start, "[resample_1c_plain]", "1:1 copy/crop of %dx%d pixels",
+    dt_show_times_f(&start, "[resample_mask]", "1:1 copy/crop of %dx%d pixels",
                     roi_in->width, roi_in->height);
     // All done, so easy case
     return;
   }
 
   // Generic non 1:1 case... much more complicated :D
-
+  gboolean error = FALSE;
   // Prepare resampling plans once and for all
-  if(_prepare_resampling_plan(itor, roi_in->width, roi_in->x,
-                              roi_out->width, roi_out->x, roi_out->scale,
+  if(_prepare_resampling_plan(itor, roi_in->width, roi_out->width, dx, roi_out->scale,
                               &hlength, &hkernel, &hindex, NULL))
+  {
+    error = TRUE;
     goto exit;
+  }
 
-  if(_prepare_resampling_plan(itor, roi_in->height, roi_in->y,
-                              roi_out->height, roi_out->y, roi_out->scale,
+  if(_prepare_resampling_plan(itor, roi_in->height, roi_out->height, dy, roi_out->scale,
                               &vlength, &vkernel, &vindex, &vmeta))
+  {
+    error = TRUE;
     goto exit;
+  }
 
   dt_get_perf_times(&mid);
 
@@ -1528,7 +1526,7 @@ static void _interpolation_resample_1c_plain(const struct dt_interpolation *itor
       // Output pixel is ready
       float *o = (float *)((char *)out + (size_t)oy * out_stride
                            + (size_t)ox * sizeof(float));
-      *o = vs;
+      *o = CLIP(vs);  // masks never want under/overshoots from resampling
 
       // Reset vertical resampling context
       viidx -= vl;
@@ -1541,31 +1539,23 @@ static void _interpolation_resample_1c_plain(const struct dt_interpolation *itor
   }
 
   exit:
+  if(error)
+    dt_print_pipe(DT_DEBUG_ALWAYS,
+      "resample mask failed", NULL, NULL, DT_DEVICE_CPU, roi_in, roi_out);
+
   /* Free the resampling plans. It's nasty to optimize allocs like that, but
    * it simplifies the code :-D. The length array is in fact the only memory
    * allocated. */
   dt_free_align(hlength);
   dt_free_align(vlength);
-  _show_2_times(&start, &mid, "resample_1c_plain");
-}
-
-/** Applies resampling (re-scaling) on *full* input and output buffers.
- *  roi_in and roi_out define the part of the buffers that is affected.
- */
-void dt_interpolation_resample_1c(const struct dt_interpolation *itor,
-                                  float *out,
-                                  const dt_iop_roi_t *const roi_out,
-                                  const float *const in,
-                                  const dt_iop_roi_t *const roi_in)
-{
-  return _interpolation_resample_1c_plain(itor, out, roi_out, in, roi_in);
+  _show_2_times(&start, &mid, "resample_mask_plain");
 }
 
 /** Applies resampling (re-scaling) on a specific region-of-interest of an image. The input
  *  and output buffers hold exactly those roi's. roi_in and roi_out define the relative
  *  positions of the roi's within the full input and output image, respectively.
  */
-void dt_interpolation_resample_roi_1c(const struct dt_interpolation *itor,
+void dt_interpolation_resample_roi_mask(const dt_interpolation_t *itor,
                                       float *out,
                                       const dt_iop_roi_t *const roi_out,
                                       const float *const in,
@@ -1577,7 +1567,7 @@ void dt_interpolation_resample_roi_1c(const struct dt_interpolation *itor,
   dt_iop_roi_t iroi = *roi_in;
   iroi.x = iroi.y = 0;
 
-  dt_interpolation_resample_1c(itor, out, &oroi, in, &iroi);
+  dt_interpolation_resample_mask(itor, out, &oroi, in, &iroi);
 }
 
 // clang-format off

@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2015-2024 darktable developers.
+    Copyright (C) 2015-2026 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -34,7 +34,6 @@
 #include "common/mipmap_cache.h" // for dt_mipmap_size_t, etc
 #include "common/file_location.h"
 #include "common/history.h"      // for dt_history_hash_set_mipmap
-#include "config.h"              // for GETTEXT_PACKAGE, etc
 #include "control/conf.h"        // for dt_conf_get_bool
 
 #ifdef __APPLE__
@@ -110,12 +109,12 @@ static int generate_thumbnail_cache(const dt_mipmap_size_t min_mip, const dt_mip
 
       // else, generate thumbnail and store in mipmap cache.
       dt_mipmap_buffer_t buf;
-      dt_mipmap_cache_get(darktable.mipmap_cache, &buf, imgid, k, DT_MIPMAP_BLOCKING, 'r');
-      dt_mipmap_cache_release(darktable.mipmap_cache, &buf);
+      dt_mipmap_cache_get(&buf, imgid, k, DT_MIPMAP_BLOCKING, 'r');
+      dt_mipmap_cache_release(&buf);
     }
 
     // and immediately write thumbs to disc and remove from mipmap cache.
-    dt_mimap_cache_evict(darktable.mipmap_cache, imgid);
+    dt_mipmap_cache_evict(imgid);
     // thumbnail in sync with image
     dt_history_hash_set_mipmap(imgid);
   }
@@ -182,12 +181,12 @@ int main(int argc, char *arg[])
     else if((!strcmp(arg[k], "-m") || !strcmp(arg[k], "--max-mip")) && argc > k + 1)
     {
       k++;
-      max_mip = (dt_mipmap_size_t)MIN(MAX(atoi(arg[k]), DT_MIPMAP_0), DT_MIPMAP_8);
+      max_mip = (dt_mipmap_size_t)MIN(MAX(atoi(arg[k]), DT_MIPMAP_0), DT_MIPMAP_LDR_MAX);
     }
     else if(!strcmp(arg[k], "--min-mip") && argc > k + 1)
     {
       k++;
-      min_mip = (dt_mipmap_size_t)MIN(MAX(atoi(arg[k]), DT_MIPMAP_0), DT_MIPMAP_8);
+      min_mip = (dt_mipmap_size_t)MIN(MAX(atoi(arg[k]), DT_MIPMAP_0), DT_MIPMAP_LDR_MAX);
     }
     else if(!strcmp(arg[k], "--min-imgid") && argc > k + 1)
     {
@@ -232,7 +231,7 @@ int main(int argc, char *arg[])
     exit(EXIT_FAILURE);
   }
 
-  if(max_mip == 8 && !dt_conf_get_bool("cache_disk_backend_full"))
+  if(max_mip == DT_MIPMAP_LDR_MAX && !dt_conf_get_bool("cache_disk_backend_full"))
   {
     fprintf(stderr,
             _("warning: disk backend for full preview cache is disabled (cache_disk_backend_full).\nif you want "

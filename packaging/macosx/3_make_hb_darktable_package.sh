@@ -11,6 +11,9 @@
 set -e -o pipefail
 trap 'echo "${BASH_SOURCE[0]}{${FUNCNAME[0]}}:${LINENO}: Error: command \`${BASH_COMMAND}\` failed with exit code $?"' ERR
 
+# Ensure we use system tools (BSD sed, find, etc.) even if user has GNU tools in PATH
+export PATH="/usr/bin:/bin:$PATH"
+
 # Go to directory of script
 scriptDir=$(dirname "$0")
 cd "$scriptDir"/
@@ -25,6 +28,13 @@ dtExecDir="$dtWorkingDir"/Contents/MacOS
 dtExecutables=$(echo "$dtExecDir"/darktable{,-chart,-cli,-cltest,-generate-cache,-rs-identify,-curve-tool,-noiseprofile})
 homebrewHome=$(brew --prefix)
 
+# Extract darktable version number and commit
+dt_version_full=$(cat ../../build/bin/version_gen.c | grep darktable_package_version | cut -d'"' -f2)
+dt_version=$(echo $dt_version_full | cut -d'+' -f1)
+dt_commit=$(echo $dt_version_full | cut -d'+' -f2 | cut -d'~' -f1)
+if [[ "$dt_version" = "$dt_commit" ]]; then
+  dt_commit="0"
+fi
 
 # Install direct and transitive dependencies
 function install_dependencies {
@@ -116,7 +126,7 @@ function reset_exec_path {
             # Set correct executable path
             install_name_tool -change "$hbDependency" "@executable_path/../Resources/lib/$dynDepOrigFile" "$1"  || true
 
-            # Check for loader path
+            # Check for loader paths
             oToolLoader=$(otool -L "$1" 2>/dev/null | grep '@loader_path' | grep $dynDepOrigFile | cut -d\( -f1 | sed 's/^[[:blank:]]*//;s/[[:blank:]]*$//' ) || true
             if [[ -n "$oToolLoader" ]]; then
                 echo "Resetting loader path for $hbDependency of $libraryOrigFile"
@@ -135,7 +145,21 @@ function reset_exec_path {
         echo "Resetting library ID of $libraryOrigFile"
 
         # Set correct library id
-        install_name_tool -id "@executable_path/../Resources/lib/$libraryOrigFile" "$1"  || true
+        # build the path relative to the package by cutting off $dtResourcesDir
+        execpath="@executable_path/../Resources${1#$dtResourcesDir}"
+        install_name_tool -id "$execpath" "$1"  || true
+        # install_name_tool -id "@executable_path/../Resources/lib/$libraryOrigFile" "$1"  || true
+    fi
+
+    # Check for rpaths
+    oToolRpaths=$(otool -L "$1" 2>/dev/null | grep '@rpath' | cut -d\( -f1 | sed 's/^[[:blank:]]*//;s/[[:blank:]]*$//' ) || true
+    if [[ -n "$oToolRpaths" ]]; then
+        for oToolRpath in $oToolRpaths; do
+            oToolRpathNew=$(echo $oToolRpath | sed "s#@rpath/##")
+            if [[ "$oToolRpathNew" != "libdarktable.dylib" ]]; then
+                install_name_tool -change "$oToolRpath" "@executable_path/../Resources/lib/$oToolRpathNew" "$1" || true
+            fi
+        done
     fi
 }
 
@@ -192,8 +216,8 @@ echo "APPL$dtAppName" >>"$dtWorkingDir"/Contents/PkgInfo
 cp Icons.icns "$dtResourcesDir"/
 
 # Set version information
-sed -i '' 's|{VERSION}|'$(git describe --tags --long --match '*[0-9.][0-9.][0-9]' | cut -d- -f2 | sed 's/^\([0-9]*\.[0-9]*\)$/\1.0/')'|' "$dtWorkingDir"/Contents/Info.plist
-sed -i '' 's|{COMMITS}|'$(git describe --tags --long --match '*[0-9.][0-9.][0-9]' | cut -d- -f3)'|' "$dtWorkingDir"/Contents/Info.plist
+sed -i '' 's|{VERSION}|'$(echo $dt_version)'|' "$dtWorkingDir"/Contents/Info.plist
+sed -i '' 's|{COMMITS}|'$(echo $dt_commit)'|' "$dtWorkingDir"/Contents/Info.plist
 
 # Generate settings.ini
 echo "[Settings]
@@ -224,6 +248,15 @@ for dtSharedObj in $dtSharedObjDirs; do
     mkdir "$dtResourcesDir"/lib/"$dtSharedObj"
     cp -LR "$homebrewHome"/lib/"$dtSharedObj"/* "$dtResourcesDir"/lib/"$dtSharedObj"/
 done
+
+# Homebrew's `sdl2` is sdl2-compat, which dlopen()s libSDL3 at runtime —
+# otool can't see that, so install_dependencies misses it; copy explicitly
+sdl3Source="$homebrewHome/opt/sdl3/lib/libSDL3.dylib"
+if [[ -f "$sdl3Source" ]]; then
+    cp -L "$sdl3Source" "$dtResourcesDir"/lib/libSDL3.dylib
+    install_name_tool -id "@executable_path/../Resources/lib/libSDL3.dylib" \
+        "$dtResourcesDir"/lib/libSDL3.dylib || true
+fi
 
 dtSharedObjDirs="libgphoto2 libgphoto2_port"
 for dtSharedObj in $dtSharedObjDirs; do

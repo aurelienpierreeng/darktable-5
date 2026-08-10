@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2009-2024 darktable developers.
+    Copyright (C) 2009-2026 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -27,19 +27,22 @@
 #include "develop/pixelpipe_cache.h"
 #include "imageio/imageio_common.h"
 
-#ifdef __cplusplus
-extern "C" {
-#endif /* __cplusplus */
+G_BEGIN_DECLS
 
 #define DT_PIPECACHE_MIN 2
 
-/**
- * struct used by iop modules to connect to pixelpipe.
- * data can be used to store whatever private data and
- * will be freed at the end.
- */
-struct dt_iop_module_t;
-struct dt_iop_order_iccprofile_info_t;
+// #define DT_PIPE_CAS_SHUTDOWN
+
+/** cached distorted mask at a geometric module's output boundary.
+ *  used to avoid re-distorting masks from scratch when multiple
+ *  downstream modules request the same mask type. */
+typedef struct dt_dev_distorted_mask_cache_t
+{
+  float *data;      // the cached distorted mask at this piece's output
+  dt_iop_roi_t roi; // the roi this mask corresponds to (piece->processed_roi_out)
+  dt_hash_t hash;     // hash of pipe/geometry state for invalidation
+  dt_hash_t src_hash; // hash of source data (e.g. threshold) for invalidation
+} dt_dev_distorted_mask_cache_t;
 
 typedef struct dt_dev_pixelpipe_iop_t
 {
@@ -70,18 +73,23 @@ typedef struct dt_dev_pixelpipe_iop_t
   // the following are used internally for caching:
   dt_iop_buffer_dsc_t dsc_in;
   dt_iop_buffer_dsc_t dsc_out;
-
+  uint8_t xtrans[6][6];
+  uint32_t filters;
   GHashTable *raster_masks;
+
+  // cached distorted masks at geometric module boundaries
+  dt_dev_distorted_mask_cache_t detail_mask_cache;
+  dt_dev_distorted_mask_cache_t raster_mask_cache;
 } dt_dev_pixelpipe_iop_t;
 
 typedef enum dt_dev_pixelpipe_change_t
 {
-  DT_DEV_PIPE_UNCHANGED = 0,        // no event
+  DT_DEV_PIPE_UNCHANGED   = 0,      // no event
   DT_DEV_PIPE_TOP_CHANGED = 1 << 0, // only params of top element changed
-  DT_DEV_PIPE_REMOVE = 1 << 1,      // possibly elements of the pipe have to be removed
-  DT_DEV_PIPE_SYNCH
-  = 1 << 2, // all nodes up to end need to be synched, but no removal of module pieces is necessary
-  DT_DEV_PIPE_ZOOMED = 1 << 3 // zoom event, preview pipe does not need changes
+  DT_DEV_PIPE_REMOVE      = 1 << 1, // possibly elements of the pipe have to be removed
+  DT_DEV_PIPE_SYNCH       = 1 << 2, // all nodes up to end need to be synched,
+                                    // but no removal of module pieces is necessary
+  DT_DEV_PIPE_ZOOMED      = 1 << 3  // zoom event, preview pipe does not need changes
 } dt_dev_pixelpipe_change_t;
 
 typedef enum dt_dev_pixelpipe_status_t
@@ -91,6 +99,48 @@ typedef enum dt_dev_pixelpipe_status_t
   DT_DEV_PIXELPIPE_VALID = 2,   // pixelpipe has finished; valid result
   DT_DEV_PIXELPIPE_INVALID = 3  // pixelpipe has finished; invalid result
 } dt_dev_pixelpipe_status_t;
+
+/* dt_dev_pixelpipe_stopper_t is used as shutdown in dt_dev_pixelpipe_t.
+    By design we can write atomically on a pipe->shutdown to request an early exit
+    of the pixepipe process _dev_pixelpipe_process_rec().
+
+    This requires special care in
+      - _dev_pixelpipe_process_rec()
+      - dt_dev_process_image_job()
+    possibly invalidating wrong module input/output data in the pixelpipe cache,
+    ensure either an immediate restart of the pipe or exit of dt_dev_process_image_job()
+    with an error flag.
+    A reminder, when setting pipe->shutdown we might have to do that via dt_atomic_CAS_int()
+    with wxpected DT_DEV_PIXELPIPE_STOP_NO to avoid overwriting an earlier shutdown writing.
+
+    A summary about how these shutdown modes are supposed to work.
+
+    DT_DEV_PIXELPIPE_STOP_NO
+    Set whenever a pipe is started in _dev_pixelpipe_process_rec() as default.
+
+    DT_DEV_PIXELPIPE_STOP_NODES
+    Set if the pipe should stop as the pipe nodes are changed so a restart is desired asap.
+    As nodes are recreated, we don't have to fiddle with pixelpipe cache.
+
+    DT_DEV_PIXELPIPE_STOP_HQ
+    Used to switch between darkroom HQ modes.
+    Requires a restart of the pipe but pixelpipe cache can stay.
+
+    DT_DEV_PIXELPIPE_STOP_LAST
+    If the shutdown value is >= DT_DEV_PIXELPIPE_STOP_LAST it is understood as the iop_order
+    of a module.
+    Any module might set pipe->shutdown to it's iop_order, this is checked while processing
+    the pipe and if detected the piece input data and all pipe cachelines with at least
+    this iop_order will be invalidated.
+*/
+
+typedef enum dt_dev_pixelpipe_stopper_t
+{
+  DT_DEV_PIXELPIPE_STOP_NO = 0,
+  DT_DEV_PIXELPIPE_STOP_NODES,
+  DT_DEV_PIXELPIPE_STOP_HQ,
+  DT_DEV_PIXELPIPE_STOP_LAST,
+} dt_dev_pixelpipe_stopper_t;
 
 typedef struct dt_dev_detail_mask_t
 {
@@ -131,6 +181,8 @@ typedef struct dt_dev_pixelpipe_t
   struct dt_iop_order_iccprofile_info_t *input_profile_info;
   /** output profile info **/
   struct dt_iop_order_iccprofile_info_t *output_profile_info;
+  /** used only as a cache-identity tag to invalidate the cache **/
+  struct dt_iop_order_iccprofile_info_t *export_profile_info;
 
   // instances of pixelpipe, stored in GList of dt_dev_pixelpipe_iop_t
   GList *nodes;
@@ -145,7 +197,7 @@ typedef struct dt_dev_pixelpipe_t
   size_t backbuf_size;
   int backbuf_width, backbuf_height;
   float backbuf_scale;
-  float backbuf_zoom_x, backbuf_zoom_y;
+  dt_dev_zoom_pos_t backbuf_zoom_pos;
   dt_hash_t backbuf_hash;
   dt_pthread_mutex_t mutex, backbuf_mutex, busy_mutex;
   int final_width, final_height;
@@ -161,7 +213,14 @@ typedef struct dt_dev_pixelpipe_t
   dt_imgid_t output_imgid;
   // working?
   gboolean processing;
-  // shutting down?
+  /* shutting down?
+     can be used in various ways defined in dt_dev_pixelpipe_stopper_t, in all cases the
+       running pipe is stopped asap
+     If we don't use one of the enum values this is interpreted as the iop_order of the module
+     that has set this in case of an error condition or other reasons that request a re-run of the pipe.
+     In those cases we assume cachelines after this module and the input of the stopper module
+     are not valid cachelines any more so the pixelpipe takes care of this.
+  */
   dt_atomic_int shutdown;
   // opencl enabled for this pixelpipe?
   gboolean opencl_enabled;
@@ -195,12 +254,78 @@ typedef struct dt_dev_pixelpipe_t
   GList *forms;
   // the masks generated in the pipe for later reusal are inside dt_dev_pixelpipe_iop_t
   gboolean store_all_raster_masks;
+  // module blending cache
+  float *bcache_data;
+  dt_hash_t bcache_hash;
+
+  // reusable ping-pong buffers for mask distortion walks
+  float *mask_distort_buf[2];
+  size_t mask_distort_buf_size[2];
 } dt_dev_pixelpipe_t;
 
 struct dt_develop_t;
 
+static inline gboolean dt_pipe_is_fast(const dt_dev_pixelpipe_t *pipe)
+{
+  return (pipe->type & DT_DEV_PIXELPIPE_FAST);
+}
+static inline gboolean dt_pipe_is_full(const dt_dev_pixelpipe_t *pipe)
+{
+  return (pipe->type & DT_DEV_PIXELPIPE_FULL);
+}
+static inline gboolean dt_pipe_is_thumb(const dt_dev_pixelpipe_t *pipe)
+{
+  return (pipe->type & DT_DEV_PIXELPIPE_THUMBNAIL);
+}
+static inline gboolean dt_pipe_is_export(const dt_dev_pixelpipe_t *pipe)
+{
+  return (pipe->type & DT_DEV_PIXELPIPE_EXPORT);
+}
+static inline gboolean dt_pipe_is_basic(const dt_dev_pixelpipe_t *pipe)
+{
+  return (pipe->type & DT_DEV_PIXELPIPE_BASIC);
+}
+static inline gboolean dt_pipe_is_canvas(const dt_dev_pixelpipe_t *pipe)
+{
+  return (pipe->type & DT_DEV_PIXELPIPE_CANVAS);
+}
+static inline gboolean dt_pipe_is_preview(const dt_dev_pixelpipe_t *pipe)
+{
+  return (pipe->type & DT_DEV_PIXELPIPE_PREVIEW);
+}
+static inline gboolean dt_pipe_is_preview2(const dt_dev_pixelpipe_t *pipe)
+{
+  return (pipe->type & DT_DEV_PIXELPIPE_PREVIEW2);
+}
+static inline gboolean dt_pipe_is_screen(const dt_dev_pixelpipe_t *pipe)
+{
+  return (pipe->type & DT_DEV_PIXELPIPE_SCREEN);
+}
+static inline gboolean dt_pipe_is_image(const dt_dev_pixelpipe_t *pipe)
+{
+  return (pipe->type & DT_DEV_PIXELPIPE_IMAGE);
+}
+static inline gboolean dt_pipe_is_image_final(const dt_dev_pixelpipe_t *pipe)
+{
+  return (pipe->type & DT_DEV_PIXELPIPE_IMAGE_FINAL);
+}
+static inline gboolean dt_pipe_no_mask_display(const dt_dev_pixelpipe_t *pipe)
+{
+  return pipe->mask_display == DT_DEV_PIXELPIPE_DISPLAY_NONE;
+}
+static inline gboolean dt_pipe_mask_display(const dt_dev_pixelpipe_t *pipe)
+{
+  return pipe->mask_display != DT_DEV_PIXELPIPE_DISPLAY_NONE;
+}
+
 // report pipe->type as textual string
-const char *dt_dev_pixelpipe_type_to_str(dt_dev_pixelpipe_type_t pipe_type);
+const char *dt_dev_pixelpipe_type_to_str(const dt_dev_pixelpipe_type_t pipe_type);
+// return pipe->shutdown as textual
+const char *dt_dev_pixelpipe_shutdown_to_str(const dt_dev_pixelpipe_stopper_t stopper);
+
+// sets pipe->shutdown in atomic mode
+// If DT_PIPE_CAS_SHUTDOWN is defined do that only if shutdown was DT_DEV_PIXELPIPE_STOP_NO
+void dt_dev_pixelpipe_set_shutdown(dt_dev_pixelpipe_t *pipe, const dt_dev_pixelpipe_stopper_t stopper);
 
 // inits the pixelpipe with plain passthrough input/output and empty input and default caching settings.
 gboolean dt_dev_pixelpipe_init(dt_dev_pixelpipe_t *pipe);
@@ -273,7 +398,7 @@ void dt_dev_pixelpipe_synch_top(dt_dev_pixelpipe_t *pipe, struct dt_develop_t *d
 void dt_dev_pixelpipe_rebuild(struct dt_develop_t *dev);
 
 // switch on details mask processing
-void dt_dev_pixelpipe_usedetails(dt_dev_pixelpipe_t *pipe);
+void dt_dev_pixelpipe_usedetails(dt_dev_pixelpipe_iop_t *piece);
 // process region of interest of pixels. returns TRUE if pipe was altered during processing.
 gboolean dt_dev_pixelpipe_process(dt_dev_pixelpipe_t *pipe,
                              struct dt_develop_t *dev,
@@ -312,10 +437,12 @@ gboolean dt_dev_write_scharr_mask(dt_dev_pixelpipe_iop_t *piece,
                                   const gboolean mode);
 #ifdef HAVE_OPENCL
 int dt_dev_write_scharr_mask_cl(dt_dev_pixelpipe_iop_t *piece,
-                                cl_mem in,
+                                const cl_mem in,
                                 const dt_iop_roi_t *const roi_in,
                                 const gboolean mode);
 #endif
+
+void dt_dev_prepare_piece_cfa(dt_dev_pixelpipe_iop_t *piece, const dt_iop_roi_t *roi);
 
 /* specialized version of dt_print for pixelpipe debugging */
 void dt_print_pipe_ext(const char *title,
@@ -329,12 +456,15 @@ void dt_print_pipe_ext(const char *title,
 
 // helper function writing the pipe-processed ctmask data to dest
 float *dt_dev_distort_detail_mask(dt_dev_pixelpipe_iop_t *piece,
-                                  float *src,
-                                  const struct dt_iop_module_t *target_module);
+                                  const float *src,
+                                  const struct dt_iop_module_t *target_module,
+                                  const dt_hash_t src_hash);
 
-#ifdef __cplusplus
-} // extern "C"
-#endif /* __cplusplus */
+dt_hash_t dt_dev_pixelpipe_piece_hash(dt_dev_pixelpipe_iop_t *piece,
+                                      const dt_iop_roi_t *roi,
+                                      const gboolean include);
+
+G_END_DECLS
 
 // clang-format off
 // modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py

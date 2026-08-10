@@ -79,6 +79,22 @@ static void _thumb_update_extended_infos_line(dt_thumbnail_t *thumb)
   g_free(pattern);
 }
 
+static void _thumb_update_tags_tooltip(dt_thumbnail_t *thumb)
+{
+  const gboolean ignore_dt_tags = !dt_conf_get_bool("plugins/lighttable/tagging/dttags");
+  char *tooltip = dt_util_glist_to_str("\n", dt_tag_get_hierarchical(thumb->imgid, ignore_dt_tags));
+  if(tooltip)
+  {
+    gtk_widget_set_tooltip_text(thumb->w_tags, tooltip);
+    thumb->has_tags = TRUE;
+    g_free(tooltip);
+  }
+  else
+  {
+    thumb->has_tags = FALSE;
+  }
+}
+
 static void _thumb_update_altered_tooltip(dt_thumbnail_t *thumb)
 {
   thumb->is_altered = dt_image_altered(thumb->imgid);
@@ -146,14 +162,14 @@ static void _image_update_group_tooltip(dt_thumbnail_t *thumb)
     tt = g_strdup_printf("\n\u2022 <b>%s (%s)</b>", _("current"), _("leader"));
   else
   {
-    const dt_image_t *img = dt_image_cache_get(darktable.image_cache, thumb->groupid, 'r');
+    const dt_image_t *img = dt_image_cache_get(thumb->groupid, 'r');
     if(img)
     {
       tt = g_strdup_printf
         ("%s\n\u2022 <b>%s (%s)</b>",
          _("\nclick here to set this image as group leader\n"),
          img->filename, _("leader"));
-      dt_image_cache_read_release(darktable.image_cache, img);
+      dt_image_cache_read_release(img);
     }
   }
 
@@ -215,28 +231,36 @@ static void _image_get_infos(dt_thumbnail_t *thumb)
 {
   if(!dt_is_valid_imgid(thumb->imgid))
     return;
-  if(thumb->over == DT_THUMBNAIL_OVERLAYS_NONE)
-    return;
 
   // we only get here infos that might change, others(exif, ...) are
   // cached on widget creation
 
   const int old_rating = thumb->rating;
-  thumb->rating = 0;
-  const dt_image_t *img = dt_image_cache_get(darktable.image_cache, thumb->imgid, 'r');
+  const dt_image_t *img = dt_image_cache_get(thumb->imgid, 'r');
   if(img)
   {
-    thumb->has_localcopy = (img->flags & DT_IMAGE_LOCAL_COPY);
+    // we update rating in all cases (to eventually update thumb css)
     thumb->rating = img->flags & DT_IMAGE_REJECTED
       ? DT_VIEW_REJECT
       : (img->flags & DT_VIEW_RATINGS_MASK);
+    if(old_rating != thumb->rating)
+      _thumb_update_rating_class(thumb);
+
+    // if we don't show overlays, no need to go further
+    if(thumb->over == DT_THUMBNAIL_OVERLAYS_NONE)
+    {
+      dt_image_cache_read_release(img);
+      return;
+    }
+
+    thumb->has_localcopy = (img->flags & DT_IMAGE_LOCAL_COPY);
     thumb->is_bw = dt_image_monochrome_flags(img);
     thumb->is_bw_flow = dt_image_use_monochrome_workflow(img);
     thumb->is_hdr = dt_image_is_hdr(img);
 
     thumb->groupid = img->group_id;
 
-    dt_image_cache_read_release(darktable.image_cache, img);
+    dt_image_cache_read_release(img);
   }
   // if the rating as changed, update the rejected
   if(old_rating != thumb->rating)
@@ -313,6 +337,24 @@ static void _thumb_set_image_size(dt_thumbnail_t *thumb,
                               MIN(image_h, imgbox_h));
 }
 
+static void _thumb_update_zoom_label(dt_thumbnail_t *thumb)
+{
+  if(!thumb->zoomable
+     || thumb->over != DT_THUMBNAIL_OVERLAYS_HOVER_BLOCK
+     || !thumb->w_zoom)
+    return;
+  if(thumb->zoom_100 < 1.0f || thumb->zoom <= 1.0f)
+  {
+    gtk_label_set_text(GTK_LABEL(thumb->w_zoom), _("fit"));
+  }
+  else
+  {
+    gchar *z = g_strdup_printf("%.0f%%", thumb->zoom * 100.0 / thumb->zoom_100);
+    gtk_label_set_text(GTK_LABEL(thumb->w_zoom), z);
+    g_free(z);
+  }
+}
+
 static void _thumb_draw_image(dt_thumbnail_t *thumb,
                               cairo_t *cr)
 {
@@ -329,10 +371,25 @@ static void _thumb_draw_image(dt_thumbnail_t *thumb,
   {
     cairo_save(cr);
     const float scaler = 1.0f / darktable.gui->ppd_thb;
+
+    // During an active zoom gesture (zoom_preview_pending) the surface was rendered
+    // at thumb->img_surf_zoom while thumb->zoom has already advanced.  Compute an extra
+    // scale factor so the stale surface is displayed at the correct visual size without
+    // reloading it.  When img_surf_zoom == thumb->zoom (normal case) extra_scale collapses
+    // to 1.0 and the code path is identical to before.
+    float extra_scale = 1.0f;
+    if(thumb->img_surf_zoom > 0.0f && thumb->zoom > 0.0f)
+      extra_scale = CLAMP(thumb->zoom / thumb->img_surf_zoom, 0.1f, 20.0f);
+
+    // Apply outer scaler (handles HiDPI) for frame; apply extra_scale inner for image.
     cairo_scale(cr, scaler, scaler);
 
-    cairo_set_source_surface(cr, thumb->img_surf, thumb->zoomx * darktable.gui->ppd,
-                             thumb->zoomy * darktable.gui->ppd);
+    // Draw the image with the zoom-corrected scale.
+    cairo_save(cr);
+    cairo_scale(cr, extra_scale, extra_scale);
+    cairo_set_source_surface(cr, thumb->img_surf,
+                             thumb->zoomx * darktable.gui->ppd / extra_scale,
+                             thumb->zoomy * darktable.gui->ppd / extra_scale);
 
     // get the transparency value
     GdkRGBA im_color;
@@ -340,8 +397,9 @@ static void _thumb_draw_image(dt_thumbnail_t *thumb,
                                 gtk_widget_get_state_flags(thumb->w_image),
                                 &im_color);
     cairo_paint_with_alpha(cr, im_color.alpha);
+    cairo_restore(cr);
 
-    // and eventually the image border
+    // and eventually the image border (at scaler-only, not affected by extra_scale)
     gtk_render_frame(context, cr, 0, 0,
                      w * darktable.gui->ppd_thb,
                      h * darktable.gui->ppd_thb);
@@ -389,21 +447,25 @@ static gboolean _event_cursor_draw(GtkWidget *widget,
                                    cairo_t *cr,
                                    gpointer user_data)
 {
-  if(!user_data || !widget) return TRUE;
-  dt_thumbnail_t *thumb = (dt_thumbnail_t *)user_data;
-
-  GtkStateFlags state = gtk_widget_get_state_flags(thumb->w_cursor);
-  GtkStyleContext *context = gtk_widget_get_style_context(thumb->w_cursor);
+  const double w_width  = gtk_widget_get_allocated_width(widget);
+  const double w_height = gtk_widget_get_allocated_height(widget);
+  GtkStyleContext *context = gtk_widget_get_style_context(widget);
   GdkRGBA col;
-  gtk_style_context_get_color(context, state, &col);
+  gtk_style_context_lookup_color(context, "bg_color", &col);
 
   cairo_set_source_rgba(cr, col.red, col.green, col.blue, col.alpha);
-  cairo_line_to(cr, gtk_widget_get_allocated_width(widget), 0);
-  cairo_line_to(cr, gtk_widget_get_allocated_width(widget) / 2,
-                gtk_widget_get_allocated_height(widget));
+  cairo_line_to(cr, w_width, 0);
+  cairo_line_to(cr, w_width / 2, w_height);
   cairo_line_to(cr, 0, 0);
   cairo_close_path(cr);
   cairo_fill(cr);
+
+  dt_gui_gtk_set_source_rgb(cr, DT_GUI_COLOR_THUMBNAIL_SELECTED_BG);
+  cairo_set_line_width(cr, DT_PIXEL_APPLY_DPI(2));
+  cairo_line_to(cr, w_width, 0);
+  cairo_line_to(cr, w_width / 2, w_height);
+  cairo_line_to(cr, 0, 0);
+  cairo_stroke(cr);
 
   return TRUE;
 }
@@ -439,16 +501,15 @@ static void _get_dimensions_for_img_to_fit(const dt_thumbnail_t *thumb,
   // decimal, so not enough accurate so we compute it from the larger
   // available mipmap
   float ar = 0.0f;
-  for(int k = DT_MIPMAP_7; k >= DT_MIPMAP_0; k--)
+  for(int k = DT_MIPMAP_LDR_MAX; k >= DT_MIPMAP_0; k--)
   {
     dt_mipmap_buffer_t tmp;
-    dt_mipmap_cache_get(darktable.mipmap_cache, &tmp, thumb->imgid, k,
-                        DT_MIPMAP_TESTLOCK, 'r');
+    dt_mipmap_cache_get(&tmp, thumb->imgid, k, DT_MIPMAP_TESTLOCK, 'r');
     if(tmp.buf)
     {
       const int mipw = tmp.width;
       const int miph = tmp.height;
-      dt_mipmap_cache_release(darktable.mipmap_cache, &tmp);
+      dt_mipmap_cache_release(&tmp);
       if(mipw > 0 && miph > 0)
       {
         ar = (float)mipw / miph;
@@ -461,11 +522,11 @@ static void _get_dimensions_for_img_to_fit(const dt_thumbnail_t *thumb,
   {
     // let's try with the aspect_ratio store in image structure, even
     // if it's less accurate
-    const dt_image_t *img = dt_image_cache_get(darktable.image_cache, thumb->imgid, 'r');
+    const dt_image_t *img = dt_image_cache_get(thumb->imgid, 'r');
     if(img)
     {
       ar = img->aspect_ratio;
-      dt_image_cache_read_release(darktable.image_cache, img);
+      dt_image_cache_read_release(img);
     }
   }
 
@@ -502,7 +563,7 @@ static void _get_dimensions_for_zoomed_img(dt_thumbnail_t *thumb,
   // the max zoom, but also to ensure that final_width and height are
   // available.
   const float zoom_100 = dt_thumbnail_get_zoom100(thumb);
-  const dt_image_t *img = dt_image_cache_get(darktable.image_cache, thumb->imgid, 'r');
+  const dt_image_t *img = dt_image_cache_get(thumb->imgid, 'r');
   if(img)
   {
     if(img->final_width > 0 && img->final_height > 0)
@@ -510,7 +571,7 @@ static void _get_dimensions_for_zoomed_img(dt_thumbnail_t *thumb,
       iw = img->final_width;
       ih = img->final_height;
     }
-    dt_image_cache_read_release(darktable.image_cache, img);
+    dt_image_cache_read_release(img);
   }
 
   // scale first to "img to fit", then apply the zoom ratio to get the
@@ -596,6 +657,56 @@ static void _thumb_set_image_area(dt_thumbnail_t *thumb,
   gtk_widget_set_size_request(thumb->w_image_box, image_w, image_h);
   gtk_widget_set_margin_start(thumb->w_image_box, thumb->img_margin->left);
   gtk_widget_set_margin_top(thumb->w_image_box, posy);
+}
+
+// Resize the image box (w_image — the rectangle the grey frame is drawn around)
+// so it hugs the visible image at the current zoom, and recenter the pan to
+// account for the size change. The visible extent is the rendered surface size
+// (img_width/img_height, produced at img_surf_zoom) scaled to the current
+// thumb->zoom. In the surface-reload path img_surf_zoom has just been set equal
+// to thumb->zoom so the scale is 1; during a deferred zoom gesture (surface not
+// yet reloaded) the scale tracks how far the zoom has advanced past the surface,
+// so the box still grows/shrinks live with the gesture instead of snapping only
+// when the surface is finally reloaded.
+static void _thumb_update_image_box(dt_thumbnail_t *thumb)
+{
+  if(!thumb->img_surf) return;
+
+  const float scale =
+    (thumb->img_surf_zoom > 0.0f) ? thumb->zoom / thumb->img_surf_zoom : 1.0f;
+
+  int image_w = 0;
+  int image_h = 0;
+  gtk_widget_get_size_request(thumb->w_image_box, &image_w, &image_h);
+
+  // the box hugs the image but never exceeds the available image area
+  const int imgbox_w =
+    MIN(image_w, (int)(thumb->img_width * scale / darktable.gui->ppd_thb));
+  const int imgbox_h =
+    MIN(image_h, (int)(thumb->img_height * scale / darktable.gui->ppd_thb));
+
+  // record the box size before the change so we can recenter the pan
+  int ww = 0;
+  int hh = 0;
+  gtk_widget_get_size_request(thumb->w_image, &ww, &hh);
+  _thumb_set_image_size(thumb, imgbox_w, imgbox_h);
+  // the box size may have been slightly sanitized, so we read it back
+  int nwi = 0;
+  int nhi = 0;
+  gtk_widget_get_size_request(thumb->w_image, &nwi, &nhi);
+
+  // panning value needs to be adjusted if the box size changed
+  thumb->zoomx = thumb->zoomx + (nwi - ww) / 2.0;
+  thumb->zoomy = thumb->zoomy + (nhi - hh) / 2.0;
+  // sanitize against the (scaled) real image extent, accounting for ppd
+  thumb->zoomx =
+    CLAMP(thumb->zoomx,
+          (nwi * darktable.gui->ppd_thb - thumb->img_width * scale)
+          / darktable.gui->ppd_thb, 0);
+  thumb->zoomy =
+    CLAMP(thumb->zoomy,
+          (nhi * darktable.gui->ppd_thb - thumb->img_height * scale)
+          / darktable.gui->ppd_thb, 0);
 }
 
 static gboolean _event_image_draw(GtkWidget *widget,
@@ -717,10 +828,16 @@ static gboolean _event_image_draw(GtkWidget *widget,
           if(zoom100 > 1.0f)
             thumb->zoom = MIN(thumb->zoom, zoom100);
         }
-        res = dt_view_image_get_surface(thumb->imgid,
-                                        image_w * thumb->zoom,
-                                        image_h * thumb->zoom,
-                                        &img_surf, FALSE);
+        // Use the cached variant: on zoom events where image content
+        // hasn't changed, this reuses the native-resolution
+        // color-converted surface and only re-scales it, skipping the
+        // expensive mipmap fetch + calloc + color transform.
+        res = dt_view_image_get_surface_cached(thumb->imgid,
+                                               image_w * thumb->zoom,
+                                               image_h * thumb->zoom,
+                                               &img_surf, FALSE,
+                                               &thumb->img_surf_mip_native,
+                                               &thumb->img_surf_mip_level);
       }
       else
       {
@@ -742,36 +859,13 @@ static gboolean _event_image_draw(GtkWidget *widget,
     {
       thumb->img_width = cairo_image_surface_get_width(thumb->img_surf);
       thumb->img_height = cairo_image_surface_get_height(thumb->img_surf);
-      // and we want to resize the imagebox to fit in the imagearea
-      const int imgbox_w = MIN(image_w, thumb->img_width / darktable.gui->ppd_thb);
-      const int imgbox_h = MIN(image_h, thumb->img_height / darktable.gui->ppd_thb);
-      // we record the imagebox size before the change
-      int hh = 0;
-      int ww = 0;
-      gtk_widget_get_size_request(thumb->w_image, &ww, &hh);
-      // and we set the new size of the imagebox
-      _thumb_set_image_size(thumb, imgbox_w, imgbox_h);
-      // the imagebox size may have been slightly sanitized, so we get it again
-      int nhi = 0;
-      int nwi = 0;
-      gtk_widget_get_size_request(thumb->w_image, &nwi, &nhi);
-
-      // panning value need to be adjusted if the imagebox size as changed
-      thumb->zoomx = thumb->zoomx + (nwi - ww) / 2.0;
-      thumb->zoomy = thumb->zoomy + (nhi - hh) / 2.0;
-      // let's sanitize and apply panning values as we are sure the
-      // zoomed image is loaded now here we have to make sure to
-      // properly align according to ppd
-      thumb->zoomx
-          = CLAMP(thumb->zoomx,
-                  (nwi * darktable.gui->ppd_thb - thumb->img_width)
-                  / darktable.gui->ppd_thb,
-                  0);
-      thumb->zoomy
-          = CLAMP(thumb->zoomy,
-                  (nhi * darktable.gui->ppd_thb - thumb->img_height)
-                  / darktable.gui->ppd_thb,
-                  0);
+      // record the zoom this surface was rendered at, so deferred-gesture bound
+      // math can scale the real surface extent to the current (advancing) zoom.
+      thumb->img_surf_zoom = thumb->zoom;
+      // resize the image box to hug the freshly-loaded surface and recenter the
+      // pan for the size change (scale collapses to 1 here as img_surf_zoom was
+      // just set to thumb->zoom)
+      _thumb_update_image_box(thumb);
 
       // for overlay block, we need to resize it
       if(thumb->over == DT_THUMBNAIL_OVERLAYS_HOVER_BLOCK)
@@ -827,21 +921,8 @@ static gboolean _event_image_draw(GtkWidget *widget,
     }
 
     // and we can also set the zooming level if needed
-    if(res == DT_VIEW_SURFACE_OK
-       && thumb->zoomable
-       && thumb->over == DT_THUMBNAIL_OVERLAYS_HOVER_BLOCK)
-    {
-      if(thumb->zoom_100 < 1.0 || thumb->zoom <= 1.0f)
-      {
-        gtk_label_set_text(GTK_LABEL(thumb->w_zoom), _("fit"));
-      }
-      else
-      {
-        gchar *z = g_strdup_printf("%.0f%%", thumb->zoom * 100.0 / thumb->zoom_100);
-        gtk_label_set_text(GTK_LABEL(thumb->w_zoom), z);
-        g_free(z);
-      }
-    }
+    if(res == DT_VIEW_SURFACE_OK)
+      _thumb_update_zoom_label(thumb);
   }
 
   _thumb_draw_image(thumb, cr);
@@ -862,13 +943,26 @@ static void _thumb_update_icons(dt_thumbnail_t *thumb)
   gtk_widget_show(thumb->w_bottom_eb);
   gtk_widget_show(thumb->w_reject);
   gtk_widget_show(thumb->w_ext);
-  gtk_widget_show(thumb->w_cursor);
+
+  // show cursor (filmstrip current-image arrow) only for the active image
+  // and when in darkroom.
+  gboolean show_active = thumb->active;
+  if(show_active && darktable.view_manager->active_images)
+  {
+    const int activeid = GPOINTER_TO_INT(darktable.view_manager->active_images->data);
+    show_active = (thumb->imgid == activeid);
+  }
+  const gboolean show_cursor = show_active
+    && (thumb->container != DT_THUMBNAIL_CONTAINER_CULLING)
+    && (thumb->container != DT_THUMBNAIL_CONTAINER_DUPLICATE)
+    && (dt_view_get_current() == DT_VIEW_DARKROOM);
+  gtk_widget_set_visible(thumb->w_cursor, show_cursor);
 
   for(int i = 0; i < MAX_STARS; i++)
     gtk_widget_show(thumb->w_stars[i]);
 
   _set_flag(thumb->w_main, GTK_STATE_FLAG_PRELIGHT, thumb->mouse_over);
-  _set_flag(thumb->w_main, GTK_STATE_FLAG_ACTIVE, thumb->active);
+  _set_flag(thumb->w_main, GTK_STATE_FLAG_ACTIVE, show_active);
 
   _set_flag(thumb->w_reject, GTK_STATE_FLAG_ACTIVE, (thumb->rating == DT_VIEW_REJECT));
 
@@ -881,6 +975,8 @@ static void _thumb_update_icons(dt_thumbnail_t *thumb)
   _set_flag(thumb->w_main, GTK_STATE_FLAG_SELECTED, thumb->selected);
 
   gtk_widget_set_visible(thumb->w_altered, thumb->is_altered);
+  _thumb_update_tags_tooltip(thumb);
+  gtk_widget_set_visible(thumb->w_tags, thumb->has_tags);
 }
 
 static gboolean _thumbs_hide_overlays(gpointer user_data)
@@ -900,6 +996,7 @@ static gboolean _thumbs_hide_overlays(gpointer user_data)
   gtk_widget_hide(thumb->w_color);
   gtk_widget_hide(thumb->w_local_copy);
   gtk_widget_hide(thumb->w_altered);
+  gtk_widget_hide(thumb->w_tags);
   gtk_widget_hide(thumb->w_group);
   gtk_widget_hide(thumb->w_audio);
   gtk_widget_hide(thumb->w_zoom_eb);
@@ -958,7 +1055,7 @@ static gboolean _event_rating_release(GtkWidget *widget,
   if(dtgtk_thumbnail_btn_is_hidden(widget))
     return FALSE;
 
-  if(event->button == 1 && !thumb->moved)
+  if(event->button == GDK_BUTTON_PRIMARY && !thumb->moved)
   {
     dt_view_image_over_t rating = DT_VIEW_DESERT;
     if(widget == thumb->w_reject)
@@ -996,7 +1093,7 @@ static gboolean _event_grouping_release(GtkWidget *widget,
   if(dtgtk_thumbnail_btn_is_hidden(widget))
     return FALSE;
 
-  if(event->button == 1 && !thumb->moved)
+  if(event->button == GDK_BUTTON_PRIMARY && !thumb->moved)
   {
     //TODO: will succeed if either or *both* of Shift and Control are
     //pressed.  Do we want this?
@@ -1046,7 +1143,7 @@ static gboolean _event_audio_release(GtkWidget *widget,
   if(dtgtk_thumbnail_btn_is_hidden(widget))
     return FALSE;
 
-  if(event->button == 1 && !thumb->moved)
+  if(event->button == GDK_BUTTON_PRIMARY && !thumb->moved)
   {
     gboolean start_audio = TRUE;
     if(darktable.view_manager->audio.audio_player_id != -1)
@@ -1076,7 +1173,12 @@ static void _dt_image_info_changed_callback(gpointer instance,
   {
     if(GPOINTER_TO_INT(i->data) == thumb->imgid)
     {
-      dt_thumbnail_update_infos(thumb);
+      if(thumb->over == DT_THUMBNAIL_OVERLAYS_HOVER_EXTENDED
+        || thumb->over == DT_THUMBNAIL_OVERLAYS_ALWAYS_EXTENDED
+        || thumb->over == DT_THUMBNAIL_OVERLAYS_MIXED)
+        dt_thumbnail_reload_infos(thumb);
+      else
+        dt_thumbnail_update_infos(thumb);
       break;
     }
   }
@@ -1175,8 +1277,12 @@ static void _dt_preview_updated_callback(gpointer instance,
          || darktable.develop->preview_pipe->output_imgid == thumb->imgid)
      && darktable.develop->preview_pipe->backbuf)
   {
-    // reset surface
+    // reset surface and invalidate native mipmap cache (content changed)
     thumb->img_surf_dirty = TRUE;
+    if(thumb->img_surf_mip_native
+       && cairo_surface_get_reference_count(thumb->img_surf_mip_native) > 0)
+      cairo_surface_destroy(thumb->img_surf_mip_native);
+    thumb->img_surf_mip_native = NULL;
     gtk_widget_queue_draw(thumb->w_main);
   }
 }
@@ -1192,8 +1298,12 @@ static void _dt_mipmaps_updated_callback(gpointer instance,
   // we recompte the history tooltip if needed
   _thumb_update_altered_tooltip(thumb);
 
-  // reset surface
+  // reset surface and invalidate native mipmap cache (content changed)
   thumb->img_surf_dirty = TRUE;
+  if(thumb->img_surf_mip_native
+     && cairo_surface_get_reference_count(thumb->img_surf_mip_native) > 0)
+    cairo_surface_destroy(thumb->img_surf_mip_native);
+  thumb->img_surf_mip_native = NULL;
   gtk_widget_queue_draw(thumb->w_main);
 }
 
@@ -1202,14 +1312,8 @@ static gboolean _event_box_enter_leave(GtkWidget *widget,
                                        gpointer user_data)
 {
   dt_thumbnail_t *thumb = (dt_thumbnail_t *)user_data;
-  // if we leave for ancestor, that means we leave for blank thumbtable area
-  if(event->type == GDK_LEAVE_NOTIFY
-     && event->detail == GDK_NOTIFY_ANCESTOR)
-    dt_control_set_mouse_over_id(NO_IMGID);
 
-  if(!thumb->mouse_over
-     && event->type == GDK_ENTER_NOTIFY
-     && !thumb->disable_mouseover)
+  if(event->type == GDK_ENTER_NOTIFY && !thumb->disable_mouseover)
     dt_control_set_mouse_over_id(thumb->imgid);
 
   _set_flag(widget, GTK_STATE_FLAG_PRELIGHT, (event->type == GDK_ENTER_NOTIFY));
@@ -1224,9 +1328,7 @@ static gboolean _event_image_enter_leave(GtkWidget *widget,
 {
   dt_thumbnail_t *thumb = (dt_thumbnail_t *)user_data;
 
-  // we ensure that the image has mouse over
-  if(!thumb->mouse_over && event->type == GDK_ENTER_NOTIFY
-     && !thumb->disable_mouseover)
+  if(event->type == GDK_ENTER_NOTIFY && !thumb->disable_mouseover)
     dt_control_set_mouse_over_id(thumb->imgid);
 
   _set_flag(thumb->w_image_box, GTK_STATE_FLAG_PRELIGHT,
@@ -1240,20 +1342,25 @@ static gboolean _event_btn_enter_leave(GtkWidget *widget,
 {
   dt_thumbnail_t *thumb = (dt_thumbnail_t *)user_data;
 
-  darktable.control->element =
-    (event->type == GDK_ENTER_NOTIFY && widget == thumb->w_reject)
-    ? DT_VIEW_REJECT
-    : -1;
-
-  // if we leave for ancestor, that means we leave for blank thumbtable area
-  if(event->type == GDK_LEAVE_NOTIFY
-     && event->detail == GDK_NOTIFY_ANCESTOR)
-    dt_control_set_mouse_over_id(NO_IMGID);
-
-  if(thumb->disable_actions)
-    return TRUE;
   if(event->type == GDK_ENTER_NOTIFY)
+  {
+    if(widget == thumb->w_reject)
+      darktable.control->element = DT_VIEW_REJECT;
+
+    if(thumb->disable_actions)
+      return TRUE;
+
+    if(!thumb->disable_mouseover)
+      dt_control_set_mouse_over_id(thumb->imgid);
     _set_flag(thumb->w_image_box, GTK_STATE_FLAG_PRELIGHT, TRUE);
+    _thumb_update_tags_tooltip(thumb);
+  }
+  else if(event->type == GDK_LEAVE_NOTIFY)
+  {
+    if(widget == thumb->w_reject)
+      darktable.control->element = -1;
+  }
+
   return FALSE;
 }
 
@@ -1263,7 +1370,8 @@ static gboolean _event_star_enter(GtkWidget *widget,
 {
   dt_thumbnail_t *thumb = (dt_thumbnail_t *)user_data;
   if(thumb->disable_actions) return TRUE;
-  if(!thumb->mouse_over && !thumb->disable_mouseover)
+
+  if(!thumb->disable_mouseover)
     dt_control_set_mouse_over_id(thumb->imgid);
 
   _set_flag(thumb->w_bottom_eb, GTK_STATE_FLAG_PRELIGHT, TRUE);
@@ -1288,10 +1396,6 @@ static gboolean _event_star_leave(GtkWidget *widget,
                                   gpointer user_data)
 {
   dt_thumbnail_t *thumb = (dt_thumbnail_t *)user_data;
-  // if we leave for ancestor, that means we leave for blank thumbtable area
-  if(event->type == GDK_LEAVE_NOTIFY
-     && event->detail == GDK_NOTIFY_ANCESTOR)
-    dt_control_set_mouse_over_id(NO_IMGID);
 
   if(thumb->disable_actions) return TRUE;
   for(int i = 0; i < MAX_STARS; i++)
@@ -1300,15 +1404,6 @@ static gboolean _event_star_leave(GtkWidget *widget,
     gtk_widget_queue_draw(thumb->w_stars[i]);
   }
   return TRUE;
-}
-
-static gboolean _event_main_leave(GtkWidget *widget,
-                                  GdkEventCrossing *event,
-                                  gpointer user_data)
-{
-  // if we leave for ancestor, that means we leave for blank thumbtable area
-  if(event->detail == GDK_NOTIFY_ANCESTOR) dt_control_set_mouse_over_id(NO_IMGID);
-  return FALSE;
 }
 
 // we only want to specify that the mouse is hovereing the thumbnail
@@ -1365,12 +1460,18 @@ GtkWidget *dt_thumbnail_create_widget(dt_thumbnail_t *thumb,
                      G_CALLBACK(_event_main_drag_motion), thumb);
 
     g_object_set_data(G_OBJECT(thumb->w_main), "thumb", thumb);
-    DT_CONTROL_SIGNAL_CONNECT(DT_SIGNAL_ACTIVE_IMAGES_CHANGE, _dt_active_images_callback, thumb);
-    DT_CONTROL_SIGNAL_CONNECT(DT_SIGNAL_SELECTION_CHANGED, _dt_selection_changed_callback, thumb);
-    DT_CONTROL_SIGNAL_CONNECT(DT_SIGNAL_DEVELOP_MIPMAP_UPDATED, _dt_mipmaps_updated_callback, thumb);
-    DT_CONTROL_SIGNAL_CONNECT(DT_SIGNAL_DEVELOP_PREVIEW_PIPE_FINISHED, _dt_preview_updated_callback, thumb);
-    DT_CONTROL_SIGNAL_CONNECT(DT_SIGNAL_IMAGE_INFO_CHANGED, _dt_image_info_changed_callback, thumb);
-    DT_CONTROL_SIGNAL_CONNECT(DT_SIGNAL_COLLECTION_CHANGED, _dt_collection_changed_callback, thumb);
+    DT_CONTROL_SIGNAL_CONNECT(DT_SIGNAL_ACTIVE_IMAGES_CHANGE,
+                              _dt_active_images_callback, thumb);
+    DT_CONTROL_SIGNAL_CONNECT(DT_SIGNAL_SELECTION_CHANGED,
+                              _dt_selection_changed_callback, thumb);
+    DT_CONTROL_SIGNAL_CONNECT(DT_SIGNAL_DEVELOP_MIPMAP_UPDATED,
+                              _dt_mipmaps_updated_callback, thumb);
+    DT_CONTROL_SIGNAL_CONNECT(DT_SIGNAL_DEVELOP_PREVIEW_PIPE_FINISHED,
+                              _dt_preview_updated_callback, thumb);
+    DT_CONTROL_SIGNAL_CONNECT(DT_SIGNAL_IMAGE_INFO_CHANGED,
+                              _dt_image_info_changed_callback, thumb);
+    DT_CONTROL_SIGNAL_CONNECT(DT_SIGNAL_COLLECTION_CHANGED,
+                              _dt_collection_changed_callback, thumb);
 
     // the background
     thumb->w_back = gtk_event_box_new();
@@ -1382,8 +1483,6 @@ GtkWidget *dt_thumbnail_create_widget(dt_thumbnail_t *thumb,
     gtk_widget_set_name(thumb->w_back, "thumb-back");
     g_signal_connect(G_OBJECT(thumb->w_back), "motion-notify-event",
                      G_CALLBACK(_event_main_motion), thumb);
-    g_signal_connect(G_OBJECT(thumb->w_back), "leave-notify-event",
-                     G_CALLBACK(_event_main_leave), thumb);
     gtk_widget_show(thumb->w_back);
     gtk_container_add(GTK_CONTAINER(thumb->w_main), thumb->w_back);
 
@@ -1574,6 +1673,18 @@ GtkWidget *dt_thumbnail_create_widget(dt_thumbnail_t *thumb,
                      G_CALLBACK(_event_btn_enter_leave), thumb);
     gtk_overlay_add_overlay(GTK_OVERLAY(overlays_parent), thumb->w_altered);
 
+    // the tags icon
+    thumb->w_tags = dtgtk_thumbnail_btn_new(dtgtk_cairo_paint_tags, 0, NULL);
+    gtk_widget_set_name(thumb->w_tags, "thumb-tags");
+    gtk_widget_set_valign(thumb->w_tags, GTK_ALIGN_START);
+    gtk_widget_set_halign(thumb->w_tags, GTK_ALIGN_END);
+    gtk_widget_set_no_show_all(thumb->w_tags, TRUE);
+    g_signal_connect(G_OBJECT(thumb->w_tags), "enter-notify-event",
+                     G_CALLBACK(_event_btn_enter_leave), thumb);
+    g_signal_connect(G_OBJECT(thumb->w_tags), "leave-notify-event",
+                     G_CALLBACK(_event_btn_enter_leave), thumb);
+    gtk_overlay_add_overlay(GTK_OVERLAY(overlays_parent), thumb->w_tags);
+
     // the group bouton
     thumb->w_group = dtgtk_thumbnail_btn_new(dtgtk_cairo_paint_grouping, 0, NULL);
     gtk_widget_set_name(thumb->w_group, "thumb-group-audio");
@@ -1645,12 +1756,13 @@ dt_thumbnail_t *dt_thumbnail_new(const int width,
   thumb->zoomable = (container == DT_THUMBNAIL_CONTAINER_CULLING
                      || container == DT_THUMBNAIL_CONTAINER_PREVIEW);
   thumb->zoom = 1.0f;
+  thumb->img_surf_zoom = 1.0f;
   thumb->overlay_timeout_duration = dt_conf_get_int("plugins/lighttable/overlay_timeout");
   thumb->tooltip = tooltip;
   thumb->expose_again_timeout_id = 0;
 
   // we read and cache all the infos from dt_image_t that we need
-  const dt_image_t *img = dt_image_cache_get(darktable.image_cache, thumb->imgid, 'r');
+  const dt_image_t *img = dt_image_cache_get(thumb->imgid, 'r');
   if(img)
   {
     thumb->filename = g_strdup(img->filename);
@@ -1659,7 +1771,7 @@ dt_thumbnail_t *dt_thumbnail_new(const int width,
       thumb->has_audio = (img->flags & DT_IMAGE_HAS_WAV);
       thumb->has_localcopy = (img->flags & DT_IMAGE_LOCAL_COPY);
     }
-    dt_image_cache_read_release(darktable.image_cache, img);
+    dt_image_cache_read_release(img);
   }
   if(thumb->over == DT_THUMBNAIL_OVERLAYS_ALWAYS_EXTENDED
      || thumb->over == DT_THUMBNAIL_OVERLAYS_HOVER_EXTENDED
@@ -1675,7 +1787,7 @@ dt_thumbnail_t *dt_thumbnail_new(const int width,
 
   // let's see if the images are selected or active or mouse_overed
   _dt_active_images_callback(NULL, thumb);
-  if (sel == DT_THUMBNAIL_SELECTION_UNKNOWN)
+  if(sel == DT_THUMBNAIL_SELECTION_UNKNOWN)
     _dt_selection_changed_callback(NULL, thumb);
   else
     thumb->selected = sel;
@@ -1697,6 +1809,7 @@ dt_thumbnail_t *dt_thumbnail_new(const int width,
   _image_update_group_tooltip(thumb);
   _thumb_update_tooltip_text(thumb);
   _thumb_update_altered_tooltip(thumb);
+  _thumb_update_tags_tooltip(thumb);
 
   // get the file extension
   _thumb_write_extension(thumb);
@@ -1714,12 +1827,7 @@ void dt_thumbnail_destroy(dt_thumbnail_t *thumb)
   if(thumb->expose_again_timeout_id != 0)
     g_source_remove(thumb->expose_again_timeout_id);
 
-  DT_CONTROL_SIGNAL_DISCONNECT(_dt_selection_changed_callback, thumb);
-  DT_CONTROL_SIGNAL_DISCONNECT(_dt_active_images_callback, thumb);
-  DT_CONTROL_SIGNAL_DISCONNECT(_dt_mipmaps_updated_callback, thumb);
-  DT_CONTROL_SIGNAL_DISCONNECT(_dt_preview_updated_callback, thumb);
-  DT_CONTROL_SIGNAL_DISCONNECT(_dt_image_info_changed_callback, thumb);
-  DT_CONTROL_SIGNAL_DISCONNECT(_dt_collection_changed_callback, thumb);
+  DT_CONTROL_SIGNAL_DISCONNECT_ALL(thumb, "thumbnail");
   dt_thumbnail_surface_destroy(thumb);
   if(thumb->w_main) gtk_widget_destroy(thumb->w_main);
   if(thumb->filename) g_free(thumb->filename);
@@ -1842,20 +1950,26 @@ static void _thumb_resize_overlays(dt_thumbnail_t *thumb)
     gtk_widget_set_margin_top(thumb->w_altered, thumb->img_margin->top);
     gtk_widget_set_margin_end(thumb->w_altered, thumb->img_margin->right);
 
+    // the tags icon
+    gtk_widget_set_size_request(thumb->w_tags, 2.0 * r1, 2.0 * r1);
+    gtk_widget_set_halign(thumb->w_tags, GTK_ALIGN_END);
+    gtk_widget_set_margin_top(thumb->w_tags, thumb->img_margin->top);
+    gtk_widget_set_margin_end(thumb->w_tags, thumb->img_margin->right + 2.5 * r1);
+
     // the group bouton
     gtk_widget_set_size_request(thumb->w_group, 2.0 * r1, 2.0 * r1);
     gtk_widget_set_halign(thumb->w_group, GTK_ALIGN_END);
     gtk_widget_set_margin_top(thumb->w_group, thumb->img_margin->top);
-    gtk_widget_set_margin_end(thumb->w_group, thumb->img_margin->right + 2.5 * r1);
+    gtk_widget_set_margin_end(thumb->w_group, thumb->img_margin->right + 5.0 * r1);
 
     // the sound icon
     gtk_widget_set_size_request(thumb->w_audio, 2.0 * r1, 2.0 * r1);
     gtk_widget_set_halign(thumb->w_audio, GTK_ALIGN_END);
     gtk_widget_set_margin_top(thumb->w_audio, thumb->img_margin->top);
-    gtk_widget_set_margin_end(thumb->w_audio, thumb->img_margin->right + 5.0 * r1);
+    gtk_widget_set_margin_end(thumb->w_audio, thumb->img_margin->right + 7.5 * r1);
 
     // the filmstrip cursor
-    gtk_widget_set_size_request(thumb->w_cursor, 6.0 * r1, 1.5 * r1);
+    gtk_widget_set_size_request(thumb->w_cursor, 6.0 * r1, 3.0 * r1);
   }
   else
   {
@@ -1954,12 +2068,17 @@ static void _thumb_resize_overlays(dt_thumbnail_t *thumb)
     gtk_widget_set_size_request(thumb->w_local_copy, icon_size2, icon_size2);
     gtk_widget_set_halign(thumb->w_local_copy, GTK_ALIGN_START);
     gtk_widget_set_margin_top(thumb->w_local_copy, line3 + py);
-    gtk_widget_set_margin_start(thumb->w_local_copy, 10.0 * r1 + px);
+    gtk_widget_set_margin_start(thumb->w_local_copy, 13.0 * r1 + px);
     // the altered icon
     gtk_widget_set_size_request(thumb->w_altered, icon_size2, icon_size2);
     gtk_widget_set_halign(thumb->w_altered, GTK_ALIGN_START);
     gtk_widget_set_margin_top(thumb->w_altered, line3 + py);
-    gtk_widget_set_margin_start(thumb->w_altered, 7.0 * r1 + px);
+    gtk_widget_set_margin_start(thumb->w_altered, 10.0 * r1 + px);
+    // the tags icon
+    gtk_widget_set_size_request(thumb->w_tags, icon_size2, icon_size2);
+    gtk_widget_set_halign(thumb->w_tags, GTK_ALIGN_START);
+    gtk_widget_set_margin_top(thumb->w_tags, line3 + py);
+    gtk_widget_set_margin_start(thumb->w_tags, 7.0 * r1 + px);
     // the group bouton
     gtk_widget_set_size_request(thumb->w_group, icon_size2, icon_size2);
     gtk_widget_set_halign(thumb->w_group, GTK_ALIGN_START);
@@ -2133,6 +2252,13 @@ void dt_thumbnail_set_drop(dt_thumbnail_t *thumb,
 void dt_thumbnail_image_refresh(dt_thumbnail_t *thumb)
 {
   thumb->img_surf_dirty = TRUE;
+  // Invalidate the native mipmap surface cache: the image content may
+  // have changed (edit, processing, profile change) so any cached
+  // color-converted surface is now stale.
+  if(thumb->img_surf_mip_native
+     && cairo_surface_get_reference_count(thumb->img_surf_mip_native) > 0)
+    cairo_surface_destroy(thumb->img_surf_mip_native);
+  thumb->img_surf_mip_native = NULL;
 
   // we ensure that the image is not completely outside the thumbnail,
   // otherwise the image_draw is not triggered
@@ -2142,6 +2268,55 @@ void dt_thumbnail_image_refresh(dt_thumbnail_t *thumb)
     gtk_widget_set_margin_start(thumb->w_image_box, 0);
     gtk_widget_set_margin_top(thumb->w_image_box, 0);
   }
+  gtk_widget_queue_draw(thumb->w_main);
+}
+
+// force redraw for zoom-only changes: marks the surface dirty but keeps
+// the native mipmap surface cache so the expensive calloc + color-transform
+// is skipped on the next draw if the zoom stays in the same mipmap bucket.
+void dt_thumbnail_image_refresh_zoom(dt_thumbnail_t *thumb)
+{
+  thumb->img_surf_dirty = TRUE;
+  thumb->zoom_preview_pending = FALSE;
+  // img_surf_mip_native is intentionally NOT cleared here — the mipmap
+  // content hasn't changed, only the zoom level.
+
+  // we ensure that the image is not completely outside the thumbnail,
+  // otherwise the image_draw is not triggered
+  if(gtk_widget_get_margin_start(thumb->w_image_box) >= thumb->width
+     || gtk_widget_get_margin_top(thumb->w_image_box) >= thumb->height)
+  {
+    gtk_widget_set_margin_start(thumb->w_image_box, 0);
+    gtk_widget_set_margin_top(thumb->w_image_box, 0);
+  }
+  _thumb_update_zoom_label(thumb);
+  gtk_widget_queue_draw(thumb->w_main);
+}
+
+// Instant zoom preview: does NOT set img_surf_dirty, so the expensive
+// mipmap reload is skipped.  _thumb_draw_image will scale the existing
+// surface via an extra cairo transform to show the new zoom immediately.
+// Call dt_culling_zoom_end() when the gesture finishes to trigger the
+// proper surface reload at the final zoom level.
+void dt_thumbnail_image_preview_zoom(dt_thumbnail_t *thumb)
+{
+  thumb->zoom_preview_pending = TRUE;
+
+  // resize the image box (grey frame) to track the new zoom even though the
+  // surface reload is deferred — otherwise the box only resizes when the gesture
+  // ends and the surface is finally reloaded, leaving the frame stuck at the
+  // previous zoom's size mid-gesture.
+  _thumb_update_image_box(thumb);
+
+  // we ensure that the image is not completely outside the thumbnail,
+  // otherwise the image_draw is not triggered
+  if(gtk_widget_get_margin_start(thumb->w_image_box) >= thumb->width
+     || gtk_widget_get_margin_top(thumb->w_image_box) >= thumb->height)
+  {
+    gtk_widget_set_margin_start(thumb->w_image_box, 0);
+    gtk_widget_set_margin_top(thumb->w_image_box, 0);
+  }
+  _thumb_update_zoom_label(thumb);
   gtk_widget_queue_draw(thumb->w_main);
 }
 
@@ -2158,6 +2333,7 @@ void dt_thumbnail_set_overlay(dt_thumbnail_t *thumb,
                               const dt_thumbnail_overlay_t over,
                               const int timeout)
 {
+  if(!thumb) return;
   // if no change...
   if(thumb->over == over)
   {
@@ -2199,6 +2375,7 @@ void dt_thumbnail_set_overlay(dt_thumbnail_t *thumb,
     _widget_change_parent_overlay(thumb->w_color, overlays_parent);
     _widget_change_parent_overlay(thumb->w_local_copy, overlays_parent);
     _widget_change_parent_overlay(thumb->w_altered, overlays_parent);
+    _widget_change_parent_overlay(thumb->w_tags, overlays_parent);
     _widget_change_parent_overlay(thumb->w_group, overlays_parent);
     _widget_change_parent_overlay(thumb->w_audio, overlays_parent);
     _widget_change_parent_overlay(thumb->w_zoom_eb, overlays_parent);
@@ -2217,17 +2394,23 @@ void dt_thumbnail_set_overlay(dt_thumbnail_t *thumb,
 void dt_thumbnail_image_refresh_position(dt_thumbnail_t *thumb)
 {
   // let's sanitize and apply panning values
-  // here we have to make sure to properly align according to ppd
+  // Bound the pan to the real rendered image extent (img_width/img_height), which
+  // accounts for letterboxing when the image aspect ratio differs from the box.
+  // During a deferred gesture the surface is still at img_surf_zoom while thumb->zoom
+  // has advanced, so we scale the extent by (zoom / img_surf_zoom). When the surface
+  // is current this ratio is 1.0 and the bound is the exact image edge.
   int iw = 0;
   int ih = 0;
   gtk_widget_get_size_request(thumb->w_image, &iw, &ih);
+  const float zr =
+    (thumb->img_surf_zoom > 0.0f) ? thumb->zoom / thumb->img_surf_zoom : 1.0f;
   thumb->zoomx =
     CLAMP(thumb->zoomx,
-          (iw * darktable.gui->ppd_thb - thumb->img_width) / darktable.gui->ppd_thb,
+          (iw * darktable.gui->ppd_thb - thumb->img_width * zr) / darktable.gui->ppd_thb,
           0);
   thumb->zoomy =
     CLAMP(thumb->zoomy,
-          (ih * darktable.gui->ppd_thb - thumb->img_height) / darktable.gui->ppd_thb,
+          (ih * darktable.gui->ppd_thb - thumb->img_height * zr) / darktable.gui->ppd_thb,
           0);
   gtk_widget_queue_draw(thumb->w_main);
 }
@@ -2265,7 +2448,9 @@ float dt_thumbnail_get_zoom_ratio(dt_thumbnail_t *thumb)
 // force the reload of image infos
 void dt_thumbnail_reload_infos(dt_thumbnail_t *thumb)
 {
-  const dt_image_t *img = dt_image_cache_get(darktable.image_cache, thumb->imgid, 'r');
+  if(!thumb) return;
+
+  const dt_image_t *img = dt_image_cache_get(thumb->imgid, 'r');
   if(img)
   {
     if(thumb->over != DT_THUMBNAIL_OVERLAYS_NONE)
@@ -2275,7 +2460,7 @@ void dt_thumbnail_reload_infos(dt_thumbnail_t *thumb)
       thumb->has_localcopy = (img->flags & DT_IMAGE_LOCAL_COPY);
     }
 
-    dt_image_cache_read_release(darktable.image_cache, img);
+    dt_image_cache_read_release(img);
   }
   if(thumb->over == DT_THUMBNAIL_OVERLAYS_ALWAYS_EXTENDED
      || thumb->over == DT_THUMBNAIL_OVERLAYS_HOVER_EXTENDED
@@ -2309,18 +2494,24 @@ void dt_thumbnail_reload_infos(dt_thumbnail_t *thumb)
 
 void dt_thumbnail_surface_destroy(dt_thumbnail_t *thumb)
 {
+  if(!thumb) return;
   // we need to check also the reference count to be sure the surface
   // is not in an intermediate state
   if(thumb->img_surf && cairo_surface_get_reference_count(thumb->img_surf) > 0)
     cairo_surface_destroy(thumb->img_surf);
   thumb->img_surf = NULL;
   thumb->img_surf_dirty = TRUE;
+  // Also free the cached native mipmap surface.
+  if(thumb->img_surf_mip_native
+     && cairo_surface_get_reference_count(thumb->img_surf_mip_native) > 0)
+    cairo_surface_destroy(thumb->img_surf_mip_native);
+  thumb->img_surf_mip_native = NULL;
 }
 
 void dt_thumbnail_set_selection(dt_thumbnail_t *thumb,
                                 const gboolean selected)
 {
-  if(thumb->selected == selected)
+  if(!thumb || thumb->selected == selected)
     return;
 
   thumb->selected = selected;

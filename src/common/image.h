@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2009-2024 darktable developers.
+    Copyright (C) 2009-2025 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -18,10 +18,6 @@
 
 #pragma once
 
-#ifdef HAVE_CONFIG_H
-#include "config.h"
-#endif
-
 #include "common/color_harmony.h"
 #include "common/colorspaces.h"
 #include "common/dtpthread.h"
@@ -29,9 +25,7 @@
 #include <glib.h>
 #include <inttypes.h>
 
-#ifdef __cplusplus
-extern "C" {
-#endif /* __cplusplus */
+G_BEGIN_DECLS
 
 /** return value of image io functions. */
 typedef enum dt_imageio_retval_t
@@ -113,7 +107,8 @@ typedef enum dt_image_colorspace_t
 {
   DT_IMAGE_COLORSPACE_NONE,
   DT_IMAGE_COLORSPACE_SRGB,
-  DT_IMAGE_COLORSPACE_ADOBE_RGB
+  DT_IMAGE_COLORSPACE_ADOBE_RGB,
+  DT_IMAGE_COLORSPACE_USER_RGB
 } dt_image_colorspace_t;
 
 typedef struct dt_image_raw_parameters_t
@@ -268,6 +263,8 @@ typedef struct dt_image_t
   float exif_focal_length;
   float exif_focus_distance;
   float exif_crop;
+  float exif_highlight_preservation;
+  int32_t exif_flash_tagvalue;
   char exif_maker[64];
   char exif_model[64];
   char exif_lens[128];
@@ -300,7 +297,8 @@ typedef struct dt_image_t
   float aspect_ratio;
 
   // used by library
-  int32_t num, flags, film_id, version;
+  int32_t num, flags, version;
+  dt_filmid_t film_id;
   dt_imgid_t id;
   dt_imgid_t group_id;
   //timestamps
@@ -380,11 +378,13 @@ void dt_image_refresh_makermodel(dt_image_t *img);
 gboolean dt_image_is_ldr(const dt_image_t *img);
 /** returns TRUE if the image contains mosaic data. */
 gboolean dt_image_is_raw(const dt_image_t *img);
+/** returns TRUE if image contains data from a monochrome SRAW */
+gboolean dt_image_is_mono_sraw(const dt_image_t *img);
 /** returns TRUE if the image contains float data. */
 gboolean dt_image_is_hdr(const dt_image_t *img);
 /** set the monochrome flags if monochrome is TRUE and clear it otherwise */
 void dt_image_set_monochrome_flag(const dt_imgid_t imgid, const gboolean monochrome);
-/** returns TRUE if this image was taken using a monochrome camera */
+/** returns TRUE if this image was taken using a monochrome camera either by vendor or debayered */
 gboolean dt_image_is_monochrome(const dt_image_t *img);
 /** returns TRUE is image has a raw bayer sensor with RGB data */
 gboolean dt_image_is_bayerRGB(const dt_image_t *img);
@@ -401,6 +401,16 @@ gboolean dt_image_use_monochrome_workflow(const dt_image_t *img);
 char *dt_image_get_filename(const dt_imgid_t imgid);
 /** returns true if the image exists on the database */
 gboolean dt_image_exists(const dt_imgid_t imgid);
+/** TRUE if the given output profile type has primaries wider than sRGB for
+ *  this image. Handles the three UI cases used by export-style controls:
+ *    DT_COLORSPACE_NONE — "image settings", falls back to the image's
+ *                        working profile (wide-gamut if that is).
+ *    DT_COLORSPACE_FILE — custom ICC file, unknown → conservative TRUE.
+ *    any other type     — direct classification via
+ *                        dt_colorspaces_profile_is_wide_gamut().
+ */
+gboolean dt_image_has_wide_gamut_output_profile(const dt_imgid_t imgid,
+                                                const dt_colorspaces_color_profile_type_t icc_type);
 /** returns the full path name where the image was imported
  * from. from_cache=TRUE check and return local cached filename if
  * any. */
@@ -412,6 +422,8 @@ void dt_image_full_path(const dt_imgid_t imgid,
 void dt_image_film_roll_directory(const dt_image_t *img,
                                   char *pathname,
                                   const size_t pathname_len);
+/** returns the portion of the path used for the film roll name, at given levels */
+const char *dt_image_film_roll_name_levels(const char *path, const int levels);
 /** returns the portion of the path used for the film roll name. */
 const char *dt_image_film_roll_name(const char *path);
 /** returns the film roll name, i.e. without the path. */
@@ -491,8 +503,8 @@ gboolean dt_image_altered(const dt_imgid_t imgid);
 gboolean dt_image_basic(const dt_imgid_t imgid);
 /** set the image final/cropped aspect ratio */
 float dt_image_set_aspect_ratio(const dt_imgid_t imgid, const gboolean raise);
-/** set the image raw aspect ratio */
-void dt_image_set_raw_aspect_ratio(const dt_imgid_t imgid);
+/** calculate a more meaningful aspect ratio from a given aspect */
+float dt_usable_aspect(const float aspect);
 /** set the image final/cropped aspect ratio */
 void dt_image_set_aspect_ratio_to(const dt_imgid_t imgid,
                                   const float aspect_ratio,
@@ -637,9 +649,7 @@ int32_t dt_image_get_exposure_program_id(const char *name);
 int32_t dt_image_get_metering_mode_id(const char *name);
 int32_t dt_image_get_camera_id(const char *maker, const char *model);
 
-#ifdef __cplusplus
-} // extern "C"
-#endif /* __cplusplus */
+G_END_DECLS
 
 // clang-format off
 // modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py

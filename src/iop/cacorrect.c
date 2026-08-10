@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2010-2024 darktable developers.
+    Copyright (C) 2010-2026 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -21,9 +21,6 @@
 #pragma GCC optimize ("no-fast-math")
 #endif
 
-#ifdef HAVE_CONFIG_H
-#include "config.h"
-#endif
 #include "bauhaus/bauhaus.h"
 #include "common/darktable.h"
 #include "common/imagebuf.h"
@@ -258,15 +255,15 @@ void process(dt_iop_module_t *self,
   const float *const input = (float *)ivoid;
   float *output = (float *) ovoid;
 
-  const uint32_t filters = piece->pipe->dsc.filters;
+  const uint32_t filters = piece->filters;  // Just in case we want to use a roi_in 
 
-  const gboolean run_fast = piece->pipe->type & DT_DEV_PIXELPIPE_FAST;
+  const gboolean run_fast = dt_pipe_is_fast(piece->pipe);
 
   dt_iop_cacorrect_data_t *d = piece->data;
 
   // the colorshift avoiding requires non-downscaled data for sure so we
   // don't do this for preview
-  const gboolean avoidshift = d->avoidshift && !(piece->pipe->type & DT_DEV_PIXELPIPE_PREVIEW);
+  const gboolean avoidshift = d->avoidshift && !dt_pipe_is_preview(piece->pipe);
   const int iterations = d->iterations;
 
   // Because we can't break parallel processing, we need a switch do handle the errors
@@ -1305,8 +1302,6 @@ void gui_init(dt_iop_module_t *self)
 {
   dt_iop_cacorrect_gui_data_t *g = IOP_GUI_ALLOC(cacorrect);
 
-  GtkWidget *box_raw = self->widget = gtk_box_new(GTK_ORIENTATION_VERTICAL, DT_BAUHAUS_SPACE);
-
   g->iterations = dt_bauhaus_combobox_from_params(self, "iterations");
   gtk_widget_set_tooltip_text(g->iterations, _("iteration runs, default is twice"));
 
@@ -1314,6 +1309,7 @@ void gui_init(dt_iop_module_t *self)
   gtk_widget_set_tooltip_text(g->avoidshift, _("activate colorshift correction for blue & red channels"));
 
   // start building top level widget
+  GtkWidget *box_raw = self->widget;
   self->widget = gtk_stack_new();
   gtk_stack_set_homogeneous(GTK_STACK(self->widget), FALSE);
   gtk_stack_add_named(GTK_STACK(self->widget), box_raw, "bayer");

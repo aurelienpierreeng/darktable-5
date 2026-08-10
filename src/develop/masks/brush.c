@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2013-2024 darktable developers.
+    Copyright (C) 2013-2025 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -248,7 +248,7 @@ static void _brush_border_get_XY(const float p0x,
     *yb = DT_INVALID_COORDINATE;
     return;
   }
-  const float l = 1.0f / sqrtf(dx * dx + dy * dy);
+  const float l = 1.0f / dt_fast_hypotf(dx, dy);
   *xb = (*xc) + rad * dy * l;
   *yb = (*yc) - rad * dx * l;
 }
@@ -430,18 +430,16 @@ static void _brush_points_recurs_border_gaps(float *cmax,
   // we have to be sure that we turn in the correct direction
   if(a2 < a1 && clockwise)
   {
-    a2 += 2.0f * M_PI;
+    a2 += DT_2PI_F;
   }
   if(a2 > a1 && !clockwise)
   {
-    a1 += 2.0f * M_PI;
+    a1 += DT_2PI_F;
   }
 
   // we determine start and end radius too
-  float r1 = sqrtf((bmin[1] - cmax[1]) * (bmin[1] - cmax[1])
-                   + (bmin[0] - cmax[0]) * (bmin[0] - cmax[0]));
-  float r2 = sqrtf((bmax[1] - cmax[1]) * (bmax[1] - cmax[1])
-                   + (bmax[0] - cmax[0]) * (bmax[0] - cmax[0]));
+  float r1 = dt_fast_hypotf(bmin[1] - cmax[1], bmin[0] - cmax[0]);
+  float r2 = dt_fast_hypotf(bmax[1] - cmax[1], bmax[0] - cmax[0]);
 
   // and the max length of the circle arc
   int l;
@@ -489,21 +487,19 @@ static void _brush_points_recurs_border_small_gaps(float *cmax,
 {
   // we want to find the start and end angles
   const float a1 = fmodf(atan2f(bmin[1] - cmax[1], bmin[0] - cmax[0])
-                         + 2.0f * M_PI, 2.0f * M_PI);
+                         + DT_2PI_F, DT_2PI_F);
   const float a2 = fmodf(atan2f(bmax[1] - cmax[1], bmax[0] - cmax[0])
-                         + 2.0f * M_PI, 2.0f * M_PI);
+                         + DT_2PI_F, DT_2PI_F);
 
   if(a1 == a2) return;
 
   // we determine start and end radius too
-  const float r1 = sqrtf((bmin[1] - cmax[1]) * (bmin[1] - cmax[1])
-                         + (bmin[0] - cmax[0]) * (bmin[0] - cmax[0]));
-  const float r2 = sqrtf((bmax[1] - cmax[1]) * (bmax[1] - cmax[1])
-                         + (bmax[0] - cmax[0]) * (bmax[0] - cmax[0]));
+  const float r1 = dt_fast_hypotf(bmin[1] - cmax[1], bmin[0] - cmax[0]);
+  const float r2 = dt_fast_hypotf(bmax[1] - cmax[1], bmax[0] - cmax[0]);
 
   // we close the gap in the shortest direction
   float delta = a2 - a1;
-  if(fabsf(delta) > M_PI) delta = delta - copysignf(2.0f * M_PI, delta);
+  if(fabsf(delta) > M_PI_F) delta = delta - copysignf(DT_2PI_F, delta);
 
   // get the max length of the circle arc
   const int l = fabsf(delta) * fmaxf(r1, r2);
@@ -547,15 +543,14 @@ static void _brush_points_stamp(float *cmax,
   const float a1 = atan2f(bmin[1] - cmax[1], bmin[0] - cmax[0]);
 
   // we determine the radius too
-  const float rad = sqrtf((bmin[1] - cmax[1]) * (bmin[1] - cmax[1])
-                          + (bmin[0] - cmax[0]) * (bmin[0] - cmax[0]));
+  const float rad = dt_fast_hypotf(bmin[1] - cmax[1], bmin[0] - cmax[0]);
 
   // determine the max length of the circle arc
   const int l = 2.0f * M_PI * rad;
   if(l < 2) return;
 
   // and now we add the points
-  const float incra = 2.0f * M_PI / l;
+  const float incra = DT_2PI_F / l;
   float aa = a1 + incra;
   // allocate entries in the dynbufs
   float *dpoints_ptr = dt_masks_dynbuf_reserve_n(dpoints, 2*(l-1));
@@ -1499,7 +1494,7 @@ static int _brush_events_button_pressed(dt_iop_module_t *module,
   const float masks_density = 1.0f;
 
   if(gui->creation
-     && which == 1
+     && which == GDK_BUTTON_PRIMARY
      && (dt_modifier_is(state, GDK_CONTROL_MASK | GDK_SHIFT_MASK)
          || dt_modifier_is(state, GDK_SHIFT_MASK)))
   {
@@ -1509,7 +1504,7 @@ static int _brush_events_button_pressed(dt_iop_module_t *module,
 
     return 1;
   }
-  else if(which == 1)
+  else if(which == GDK_BUTTON_PRIMARY)
   {
     if(gui->creation)
     {
@@ -1678,7 +1673,7 @@ static int _brush_events_button_pressed(dt_iop_module_t *module,
     }
     gui->point_edited = -1;
   }
-  else if(gui->creation && which == 3)
+  else if(gui->creation && which == GDK_BUTTON_SECONDARY)
   {
     dt_masks_dynbuf_free(gui->guipoints);
     dt_masks_dynbuf_free(gui->guipoints_payload);
@@ -1694,7 +1689,7 @@ static int _brush_events_button_pressed(dt_iop_module_t *module,
     dt_control_queue_redraw_center();
     return 1;
   }
-  else if(gui->point_selected >= 0 && which == 3)
+  else if(gui->point_selected >= 0 && which == GDK_BUTTON_SECONDARY)
   {
     // we remove the point (and the entire form if there is too few points)
     if(g_list_shorter_than(form->points, 3))
@@ -1747,7 +1742,7 @@ static int _brush_events_button_pressed(dt_iop_module_t *module,
 
     return 1;
   }
-  else if(gui->feather_selected >= 0 && which == 3)
+  else if(gui->feather_selected >= 0 && which == GDK_BUTTON_SECONDARY)
   {
     dt_masks_point_brush_t *point
         = (dt_masks_point_brush_t *)g_list_nth_data(form->points, gui->feather_selected);
@@ -1763,7 +1758,7 @@ static int _brush_events_button_pressed(dt_iop_module_t *module,
     }
     return 1;
   }
-  else if(which == 3 && dt_is_valid_maskid(parentid) && gui->edit_mode == DT_MASKS_EDIT_FULL)
+  else if(which == GDK_BUTTON_SECONDARY && dt_is_valid_maskid(parentid) && gui->edit_mode == DT_MASKS_EDIT_FULL)
   {
     // we hide the form
     if(!(darktable.develop->form_visible->type & DT_MASKS_GROUP))
@@ -1821,14 +1816,14 @@ static int _brush_events_button_released(dt_iop_module_t *module,
         BORDER_MAX);
 
   if(gui->creation
-     && which == 1
+     && which == GDK_BUTTON_PRIMARY
      && (dt_modifier_is(state, GDK_SHIFT_MASK)
          || dt_modifier_is(state, GDK_CONTROL_MASK | GDK_SHIFT_MASK)))
   {
     // user just set the source position, so just return
     return 1;
   }
-  else if(gui->creation && which == 1)
+  else if(gui->creation && which == GDK_BUTTON_PRIMARY)
   {
     if(gui->guipoints && gui->guipoints_count > 0)
     {
@@ -1932,8 +1927,8 @@ static int _brush_events_button_released(dt_iop_module_t *module,
         // and we switch in edit mode to show all the forms
         // spots and retouch have their own handling of creation_continuous
         if(gui->creation_continuous
-           && (dt_iop_module_is(crea_module->so, "spots")
-               || dt_iop_module_is(crea_module->so, "retouch")))
+           && (dt_iop_module_is(crea_module, "spots")
+               || dt_iop_module_is(crea_module, "retouch")))
           dt_masks_set_edit_mode_single_form(crea_module, form->formid, DT_MASKS_EDIT_FULL);
         else if(!gui->creation_continuous)
           dt_masks_set_edit_mode(crea_module, DT_MASKS_EDIT_FULL);
@@ -1947,8 +1942,8 @@ static int _brush_events_button_released(dt_iop_module_t *module,
       {
         //spot and retouch manage creation_continuous in their own way
         if(crea_module
-           && !dt_iop_module_is(crea_module->so, "spots")
-           && !dt_iop_module_is(crea_module->so, "retouch"))
+           && !dt_iop_module_is(crea_module, "spots")
+           && !dt_iop_module_is(crea_module, "retouch"))
         {
           dt_iop_gui_blend_data_t *bd = crea_module->blend_data;
           for(int n = 0; n < DEVELOP_MASKS_NB_SHAPES; n++)
@@ -2152,8 +2147,6 @@ static int _brush_events_mouse_moved(struct dt_iop_module_t *module,
                                      dt_masks_form_gui_t *gui,
                                      const int index)
 {
-  const float as = dt_masks_sensitive_dist(zoom_scale);
-
   if(!gui) return 0;
 
   dt_masks_form_gui_points_t *gpt = g_list_nth_data(gui->points, index);
@@ -2275,7 +2268,7 @@ static int _brush_events_mouse_moved(struct dt_iop_module_t *module,
     dt_masks_point_brush_t *point = g_list_nth_data(form->points, k);
     const float nx = point->corner[0] * iwidth;
     const float ny = point->corner[1] * iheight;
-    const float nr = sqrtf((pts[0] - nx) * (pts[0] - nx) + (pts[1] - ny) * (pts[1] - ny));
+    const float nr = dt_fast_hypotf(pts[0] - nx, pts[1] - ny);
     const float bdr = nr / fminf(iwidth, iheight);
 
     point->border[0] = point->border[1] = bdr;
@@ -2331,6 +2324,8 @@ static int _brush_events_mouse_moved(struct dt_iop_module_t *module,
 
   pzx *= wd;
   pzy *= ht;
+
+  const float as = dt_masks_sensitive_dist(zoom_scale);
 
   if((gui->group_selected == index) && gui->point_edited >= 0)
   {

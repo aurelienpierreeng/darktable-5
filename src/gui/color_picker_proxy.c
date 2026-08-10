@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2018-2023 darktable developers.
+    Copyright (C) 2018-2026 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU Lesser General Public License as published by
@@ -107,14 +107,14 @@ static void _color_picker_reset(dt_iop_color_picker_t *picker)
 {
   if(picker)
   {
-    ++darktable.gui->reset;
+    DT_ENTER_GUI_UPDATE();
 
     if(DTGTK_IS_TOGGLEBUTTON(picker->colorpick))
       gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(picker->colorpick), FALSE);
     else
       dt_bauhaus_widget_set_quad_active(picker->colorpick, FALSE);
 
-    --darktable.gui->reset;
+    DT_LEAVE_GUI_UPDATE();
   }
 }
 
@@ -139,19 +139,18 @@ static void _init_picker(dt_iop_color_picker_t *picker,
                          const dt_iop_color_picker_flags_t flags,
                          GtkWidget *button)
 {
-  // module is NULL if primary colorpicker
-  picker->module     = module;
-  picker->flags      = flags;
-  picker->picker_cst = module ? module->default_colorspace(module, NULL, NULL)
-                              : IOP_CS_NONE;
-  picker->colorpick  = button;
-  picker->changed    = FALSE;
-  picker->fixed_cst  = FALSE;
+  DT_IOP_SECTION_FOR_PARAMS_UNWIND(module);
 
-  // default values
-  picker->pick_box[0] = picker->pick_box[1] = 0.0f;
-  picker->pick_box[2] = picker->pick_box[3] = 1.0f;
-  picker->pick_pos[0] = picker->pick_pos[1] = 0.0f;
+  // module is NULL if primary colorpicker
+  picker->module      = module;
+  picker->flags       = flags;
+  picker->picker_cst  = module ? module->default_colorspace(module, NULL, NULL)
+                               : IOP_CS_NONE;
+  picker->colorpick   = button;
+  picker->changed     = FALSE;
+  picker->fixed_cst   = FALSE;
+  picker->initialized = FALSE;
+
   _color_picker_reset(picker);
 }
 
@@ -162,7 +161,7 @@ static gboolean _color_picker_callback_button_press(GtkWidget *button,
   // module is NULL if primary colorpicker
   dt_iop_module_t *module = self->module;
 
-  if(darktable.gui->reset) return FALSE;
+  DT_GUARD_GUI_UPDATE(FALSE);
 
   dt_iop_color_picker_t *prior_picker = darktable.lib->proxy.colorpicker.picker_proxy;
   if(prior_picker && prior_picker != self)
@@ -177,15 +176,11 @@ static gboolean _color_picker_callback_button_press(GtkWidget *button,
 
   const GdkModifierType state = e != NULL ? e->state : dt_key_modifier_state();
   const gboolean to_area_mode =
-    dt_modifier_is(state, GDK_CONTROL_MASK) || (e != NULL && e->button == 3);
+    dt_modifier_is(state, GDK_CONTROL_MASK) || (e != NULL && e->button == GDK_BUTTON_SECONDARY);
   dt_iop_color_picker_flags_t flags = self->flags;
 
   // setup if a new picker or switching between point/area mode
-  if(prior_picker != self
-     || (((flags & DT_COLOR_PICKER_POINT_AREA) == DT_COLOR_PICKER_POINT_AREA)
-         && (to_area_mode !=
-             (darktable.lib->proxy.colorpicker.primary_sample->size ==
-              DT_LIB_COLORPICKER_SIZE_BOX))))
+  if(prior_picker != self)
   {
     darktable.lib->proxy.colorpicker.picker_proxy = self;
 
@@ -199,25 +194,20 @@ static gboolean _color_picker_callback_button_press(GtkWidget *button,
     // pull picker's last recorded positions
     if(kind & DT_COLOR_PICKER_AREA)
     {
-      if(   self->pick_box[0] == 0.0f && self->pick_box[1] == 0.0f
-         && self->pick_box[2] == 1.0f && self->pick_box[3] == 1.0f)
-      {
-        dt_boundingbox_t reset = { 0.02f, 0.02f, 0.98f, 0.98f };
-        dt_color_picker_backtransform_box(darktable.develop, 2, reset, self->pick_box);
-      }
+      if(!self->initialized)
+        dt_lib_colorpicker_reset_box_area(self->pick_box);
       dt_lib_colorpicker_set_box_area(darktable.lib, self->pick_box);
     }
     else if(kind & DT_COLOR_PICKER_POINT)
     {
-      if(self->pick_pos[0] == 0.0f && self->pick_pos[1] == 0.0f)
-      {
-        dt_boundingbox_t middle = { 0.5f, 0.5f };
-        dt_color_picker_backtransform_box(darktable.develop, 1, middle, self->pick_pos);
-      }
+      if(!self->initialized)
+        dt_lib_colorpicker_reset_point(self->pick_pos);
       dt_lib_colorpicker_set_point(darktable.lib, self->pick_pos);
     }
     else
       dt_unreachable_codepath();
+
+    self->initialized = TRUE;
 
     dt_lib_colorpicker_setup(darktable.lib,
                              flags & DT_COLOR_PICKER_DENOISE,
@@ -225,12 +215,12 @@ static gboolean _color_picker_callback_button_press(GtkWidget *button,
 
     // important to have set up state before toggling button and
     // triggering more callbacks
-    ++darktable.gui->reset;
+    DT_ENTER_GUI_UPDATE();
     if(DTGTK_IS_TOGGLEBUTTON(self->colorpick))
       gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(self->colorpick), TRUE);
     else
       dt_bauhaus_widget_set_quad_active(self->colorpick, TRUE);
-    --darktable.gui->reset;
+    DT_LEAVE_GUI_UPDATE();
 
     if(module)
     {
@@ -384,6 +374,15 @@ void dt_iop_color_picker_cleanup(void)
   DT_CONTROL_SIGNAL_DISCONNECT(_color_picker_proxy_preview_pipe_callback, NULL);
 }
 
+static void _color_picker_destroy(dt_iop_color_picker_t *picker)
+{
+  // When the widget is destroyed (e.g. during shutdown), clear the proxy pointer
+  // before freeing the struct to prevent use-after-free in dt_iop_color_picker_reset.
+  if(darktable.lib && darktable.lib->proxy.colorpicker.picker_proxy == picker)
+    darktable.lib->proxy.colorpicker.picker_proxy = NULL;
+  g_free(picker);
+}
+
 static GtkWidget *_color_picker_new(dt_iop_module_t *module,
                                     const dt_iop_color_picker_flags_t flags,
                                     GtkWidget *w,
@@ -404,7 +403,7 @@ static GtkWidget *_color_picker_new(dt_iop_module_t *module,
     }
     g_signal_connect_data(G_OBJECT(button), "button-press-event",
                           G_CALLBACK(_color_picker_callback_button_press),
-                          color_picker, (GClosureNotify)g_free, 0);
+                          color_picker, (GClosureNotify)_color_picker_destroy, 0);
     if(w) gtk_box_pack_start(GTK_BOX(w), button, FALSE, FALSE, 0);
 
     return button;
@@ -422,7 +421,7 @@ static GtkWidget *_color_picker_new(dt_iop_module_t *module,
     }
     g_signal_connect_data(G_OBJECT(w), "quad-pressed",
                           G_CALLBACK(_color_picker_callback),
-                          color_picker, (GClosureNotify)g_free, 0);
+                          color_picker, (GClosureNotify)_color_picker_destroy, 0);
 
     return w;
   }

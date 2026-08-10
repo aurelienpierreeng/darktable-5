@@ -230,6 +230,7 @@ static void _colorlabels_execute(const GList *imgs,
     _pop_undo_execute(imgid, before, after);
   }
   dt_gui_cursor_clear_busy();
+  DT_CONTROL_SIGNAL_RAISE(DT_SIGNAL_METADATA_CHANGED, DT_METADATA_SIGNAL_NEW_VALUE);
 }
 
 void dt_colorlabels_set_labels(const GList *img,
@@ -252,7 +253,6 @@ void dt_colorlabels_set_labels(const GList *img,
       dt_undo_end_group(darktable.undo);
     }
     dt_collection_hint_message(darktable.collection);
-    DT_CONTROL_SIGNAL_RAISE(DT_SIGNAL_MOUSE_OVER_IMAGE_CHANGE);
   }
 }
 
@@ -341,7 +341,7 @@ static float _action_process_color_label(gpointer target,
       const dt_imgid_t imgid = GPOINTER_TO_INT(imgs->data);
       if(imgid == darktable.develop->preview_pipe->output_imgid)
       {
-        GList *res = dt_metadata_get(imgid, "Xmp.darktable.colorlabels", NULL);
+        GList *res = dt_metadata_get_lock(imgid, "Xmp.darktable.colorlabels", NULL);
         gchar *result = NULL;
         for(GList *res_iter = res; res_iter; res_iter = g_list_next(res_iter))
         {
@@ -358,6 +358,7 @@ static float _action_process_color_label(gpointer target,
         else
           dt_toast_log(_("all colorlabels removed"));
         g_free(result);
+        DT_CONTROL_SIGNAL_RAISE(DT_SIGNAL_METADATA_CHANGED, DT_METADATA_SIGNAL_NEW_VALUE);
       }
     }
 

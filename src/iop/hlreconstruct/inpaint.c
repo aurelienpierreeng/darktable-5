@@ -1,6 +1,6 @@
 /*
    This file is part of darktable,
-   Copyright (C) 2010-2023 darktable developers.
+   Copyright (C) 2010-2026 darktable developers.
 
    darktable is free software: you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -112,15 +112,15 @@ static inline void interpolate_color_xtrans(const void *const ivoid,
     else
       i = k;
 
-    const uint8_t f0 = FCxtrans(j, i, roi_in, xtrans);
-    const uint8_t f1 = FCxtrans(dim ? (j + dir) : j, dim ? i : (i + dir), roi_in, xtrans);
-    const uint8_t fl = FCxtrans(dim ? (j + dir) : (j - 1), dim ? (i - 1) : (i + dir), roi_in, xtrans);
-    const uint8_t fr = FCxtrans(dim ? (j + dir) : (j + 1), dim ? (i + 1) : (i + dir), roi_in, xtrans);
+    const uint8_t f0 = FCNxtrans(j, i, xtrans);
+    const uint8_t f1 = FCNxtrans(dim ? (j + dir) : j, dim ? i : (i + dir), xtrans);
+    const uint8_t fl = FCNxtrans(dim ? (j + dir) : (j - 1), dim ? (i - 1) : (i + dir), xtrans);
+    const uint8_t fr = FCNxtrans(dim ? (j + dir) : (j + 1), dim ? (i + 1) : (i + dir), xtrans);
     const float clip0 = clip[f0];
     const float clip1 = clip[f1];
     const float clipl = clip[fl];
     const float clipr = clip[fr];
-    const float clip_max = fmaxf(fmaxf(clip[0], clip[1]), clip[2]);
+    const float clip_max = max3f(clip);
 
     if(i == 0 || i == roi_out->width - 1 || j == 0 || j == roi_out->height - 1)
     {

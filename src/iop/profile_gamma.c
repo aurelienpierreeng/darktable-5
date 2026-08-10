@@ -1,6 +1,6 @@
 /*
    This file is part of darktable,
-   Copyright (C) 2010-2024 darktable developers.
+   Copyright (C) 2010-2026 darktable developers.
 
    darktable is free software: you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -16,9 +16,6 @@
    along with darktable.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-#ifdef HAVE_CONFIG_H
-#include "config.h"
-#endif
 #include "bauhaus/bauhaus.h"
 #include "common/colorspaces_inline_conversions.h"
 #include "common/darktable.h"
@@ -136,31 +133,31 @@ void init_presets(dt_iop_module_so_t *self)
   p.dynamic_range = 16.0f;
   p.shadows_range = -12.0f;
   dt_gui_presets_add_generic(_("16 EV dynamic range (generic)"), self->op,
-                             self->version(), &p, sizeof(p), 1, DEVELOP_BLEND_CS_RGB_DISPLAY);
+                             self->version(), &p, sizeof(p), TRUE, DEVELOP_BLEND_CS_RGB_DISPLAY);
 
   // 14 EV preset
   p.dynamic_range = 14.0f;
   p.shadows_range = -10.50f;
   dt_gui_presets_add_generic(_("14 EV dynamic range (generic)"), self->op,
-                             self->version(), &p, sizeof(p), 1, DEVELOP_BLEND_CS_RGB_DISPLAY);
+                             self->version(), &p, sizeof(p), TRUE, DEVELOP_BLEND_CS_RGB_DISPLAY);
 
   // 12 EV preset
   p.dynamic_range = 12.0f;
   p.shadows_range = -9.0f;
   dt_gui_presets_add_generic(_("12 EV dynamic range (generic)"), self->op,
-                             self->version(), &p, sizeof(p), 1, DEVELOP_BLEND_CS_RGB_DISPLAY);
+                             self->version(), &p, sizeof(p), TRUE, DEVELOP_BLEND_CS_RGB_DISPLAY);
 
   // 10 EV preset
   p.dynamic_range = 10.0f;
   p.shadows_range = -7.50f;
   dt_gui_presets_add_generic(_("10 EV dynamic range (generic)"), self->op,
-                             self->version(), &p, sizeof(p), 1, DEVELOP_BLEND_CS_RGB_DISPLAY);
+                             self->version(), &p, sizeof(p), TRUE, DEVELOP_BLEND_CS_RGB_DISPLAY);
 
   // 08 EV preset
   p.dynamic_range = 8.0f;
   p.shadows_range = -6.0f;
   dt_gui_presets_add_generic(_("08 EV dynamic range (generic)"), self->op,
-                             self->version(), &p, sizeof(p), 1, DEVELOP_BLEND_CS_RGB_DISPLAY);
+                             self->version(), &p, sizeof(p), TRUE, DEVELOP_BLEND_CS_RGB_DISPLAY);
 }
 
 
@@ -224,31 +221,26 @@ int process_cl(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_mem dev_
   cl_mem dev_table = NULL;
   cl_mem dev_coeffs = NULL;
 
-
-  size_t sizes[3] = { ROUNDUPDWD(width, devid), ROUNDUPDHT(height, devid), 1 };
-
   if(d->mode == PROFILEGAMMA_LOG)
   {
     const float dynamic_range = d->dynamic_range;
     const float shadows_range = d->shadows_range;
     const float grey = d->grey_point / 100.0f;
-    dt_opencl_set_kernel_args(devid, gd->kernel_profilegamma_log, 0, CLARG(dev_in), CLARG(dev_out),
+    err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_profilegamma_log, width, height,
+      CLARG(dev_in), CLARG(dev_out),
       CLARG(width), CLARG(height), CLARG(dynamic_range), CLARG(shadows_range), CLARG(grey));
-
-    err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_profilegamma_log, sizes);
   }
   else if(d->mode == PROFILEGAMMA_GAMMA)
   {
-    dev_table = dt_opencl_copy_host_to_device(devid, d->table, 256, 256, sizeof(float));
+    dev_table = dt_opencl_copy_host_to_image(devid, d->table, 256, 256, sizeof(float));
     if(dev_table == NULL) goto error;
 
     dev_coeffs = dt_opencl_copy_host_to_device_constant(devid, sizeof(float) * 3, d->unbounded_coeffs);
     if(dev_coeffs == NULL) goto error;
 
-    dt_opencl_set_kernel_args(devid, gd->kernel_profilegamma, 0, CLARG(dev_in), CLARG(dev_out), CLARG(width),
+    err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_profilegamma, width, height,
+      CLARG(dev_in), CLARG(dev_out), CLARG(width),
       CLARG(height), CLARG(dev_table), CLARG(dev_coeffs));
-
-    err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_profilegamma, sizes);
   }
 
 error:
@@ -329,63 +321,63 @@ void process(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *c
 
 static void apply_auto_grey(dt_iop_module_t *self)
 {
-  if(darktable.gui->reset) return;
+  DT_GUARD_GUI_UPDATE();
   dt_iop_profilegamma_params_t *p = self->params;
   dt_iop_profilegamma_gui_data_t *g = self->gui_data;
 
-  float grey = fmax(fmax(self->picked_color[0], self->picked_color[1]), self->picked_color[2]);
+  const float grey = max3f(self->picked_color);
   p->grey_point = 100.f * grey;
 
-  ++darktable.gui->reset;
+  DT_ENTER_GUI_UPDATE();
   dt_bauhaus_slider_set(g->grey_point, p->grey_point);
-  --darktable.gui->reset;
+  DT_LEAVE_GUI_UPDATE();
 
   dt_dev_add_history_item(darktable.develop, self, TRUE);
 }
 
 static void apply_auto_black(dt_iop_module_t *self)
 {
-  if(darktable.gui->reset) return;
+  DT_GUARD_GUI_UPDATE();
   dt_iop_profilegamma_params_t *p = self->params;
   dt_iop_profilegamma_gui_data_t *g = self->gui_data;
 
-  float noise = powf(2.0f, -16.0f);
+  const float noise = powf(2.0f, -16.0f);
 
   // Black
-  float black = fmax(fmax(self->picked_color_min[0], self->picked_color_min[1]), self->picked_color_min[2]);
+  const float black = max3f(self->picked_color_min);
   float EVmin = Log2Thres(black / (p->grey_point / 100.0f), noise);
   EVmin *= (1.0f + p->security_factor / 100.0f);
 
   p->shadows_range = EVmin;
 
-  ++darktable.gui->reset;
+  DT_ENTER_GUI_UPDATE();
   dt_bauhaus_slider_set(g->shadows_range, p->shadows_range);
-  --darktable.gui->reset;
+  DT_LEAVE_GUI_UPDATE();
 
   dt_dev_add_history_item(darktable.develop, self, TRUE);
 }
 
 static void apply_auto_dynamic_range(dt_iop_module_t *self)
 {
-  if(darktable.gui->reset) return;
+  DT_GUARD_GUI_UPDATE();
   dt_iop_profilegamma_params_t *p = self->params;
   dt_iop_profilegamma_gui_data_t *g = self->gui_data;
 
-  float noise = powf(2.0f, -16.0f);
+  const float noise = powf(2.0f, -16.0f);
 
   // Black
   float EVmin = p->shadows_range;
 
   // White
-  float white = fmax(fmax(self->picked_color_max[0], self->picked_color_max[1]), self->picked_color_max[2]);
+  const float white = max3f(self->picked_color_max);
   float EVmax = Log2Thres(white / (p->grey_point / 100.0f), noise);
   EVmax *= (1.0f + p->security_factor / 100.0f);
 
   p->dynamic_range = EVmax - EVmin;
 
-  ++darktable.gui->reset;
+  DT_ENTER_GUI_UPDATE();
   dt_bauhaus_slider_set(g->dynamic_range, p->dynamic_range);
-  --darktable.gui->reset;
+  DT_LEAVE_GUI_UPDATE();
 
   dt_dev_add_history_item(darktable.develop, self, TRUE);
 }
@@ -395,30 +387,30 @@ static void apply_autotune(dt_iop_module_t *self)
   dt_iop_profilegamma_params_t *p = self->params;
   dt_iop_profilegamma_gui_data_t *g = self->gui_data;
 
-  float noise = powf(2.0f, -16.0f);
+  const float noise = powf(2.0f, -16.0f);
 
   // Grey
-  float grey = fmax(fmax(self->picked_color[0], self->picked_color[1]), self->picked_color[2]);
+  const float grey = max3f(self->picked_color);
   p->grey_point = 100.f * grey;
 
   // Black
-  float black = fmax(fmax(self->picked_color_min[0], self->picked_color_min[1]), self->picked_color_min[2]);
+  const float black = max3f(self->picked_color_min);
   float EVmin = Log2Thres(black / (p->grey_point / 100.0f), noise);
   EVmin *= (1.0f + p->security_factor / 100.0f);
 
   // White
-  float white = fmax(fmax(self->picked_color_max[0], self->picked_color_max[1]), self->picked_color_max[2]);
+  const float white = max3f(self->picked_color_max);
   float EVmax = Log2Thres(white / (p->grey_point / 100.0f), noise);
   EVmax *= (1.0f + p->security_factor / 100.0f);
 
   p->shadows_range = EVmin;
   p->dynamic_range = EVmax - EVmin;
 
-  ++darktable.gui->reset;
+  DT_ENTER_GUI_UPDATE();
   dt_bauhaus_slider_set(g->grey_point, p->grey_point);
   dt_bauhaus_slider_set(g->shadows_range, p->shadows_range);
   dt_bauhaus_slider_set(g->dynamic_range, p->dynamic_range);
-  --darktable.gui->reset;
+  DT_LEAVE_GUI_UPDATE();
 
   dt_dev_add_history_item(darktable.develop, self, TRUE);
 }
@@ -442,8 +434,8 @@ void gui_changed(dt_iop_module_t *self, GtkWidget *w, void *previous)
   }
   else if(w == g->security_factor)
   {
-    float prev = *(float *)previous;
-    float ratio = (p->security_factor - prev) / (prev + 100.0f);
+    const float prev = *(float *)previous;
+    const float ratio = (p->security_factor - prev) / (prev + 100.0f);
 
     float EVmin = p->shadows_range;
     EVmin = EVmin + ratio * EVmin;
@@ -454,10 +446,10 @@ void gui_changed(dt_iop_module_t *self, GtkWidget *w, void *previous)
     p->dynamic_range = EVmax - EVmin;
     p->shadows_range = EVmin;
 
-    ++darktable.gui->reset;
+    DT_ENTER_GUI_UPDATE();
     dt_bauhaus_slider_set(g->dynamic_range, p->dynamic_range);
     dt_bauhaus_slider_set(g->shadows_range, p->shadows_range);
-    --darktable.gui->reset;
+    DT_LEAVE_GUI_UPDATE();
   }
 }
 
@@ -605,7 +597,7 @@ void gui_init(dt_iop_module_t *self)
 
   /**** GAMMA MODE ***/
 
-  GtkWidget *vbox_gamma = self->widget = GTK_WIDGET(gtk_box_new(GTK_ORIENTATION_VERTICAL, DT_BAUHAUS_SPACE));
+  GtkWidget *vbox_gamma = self->widget = dt_gui_vbox();
 
   g->linear = dt_bauhaus_slider_from_params(self, N_("linear"));
   dt_bauhaus_slider_set_digits(g->linear, 4);
@@ -619,7 +611,7 @@ void gui_init(dt_iop_module_t *self)
 
   /**** LOG MODE ****/
 
-  GtkWidget *vbox_log = self->widget = GTK_WIDGET(gtk_box_new(GTK_ORIENTATION_VERTICAL, DT_BAUHAUS_SPACE));
+  GtkWidget *vbox_log = self->widget = dt_gui_vbox();
 
   g->grey_point
       = dt_color_picker_new(self, DT_COLOR_PICKER_AREA, dt_bauhaus_slider_from_params(self, "grey_point"));
@@ -638,7 +630,7 @@ void gui_init(dt_iop_module_t *self)
   dt_bauhaus_slider_set_format(g->dynamic_range, _(" EV"));
   gtk_widget_set_tooltip_text(g->dynamic_range, _("number of stops between pure black and pure white\nthis is a reading a light meter would give you on the scene"));
 
-  gtk_box_pack_start(GTK_BOX(vbox_log), dt_ui_section_label_new(C_("section", "optimize automatically")), FALSE, FALSE, 0);
+  dt_gui_box_add(vbox_log, dt_ui_section_label_new(C_("section", "optimize automatically")));
 
   g->security_factor = dt_bauhaus_slider_from_params(self, "security_factor");
   dt_bauhaus_slider_set_format(g->security_factor, "%");
@@ -647,17 +639,17 @@ void gui_init(dt_iop_module_t *self)
   g->auto_button = dt_color_picker_new(self, DT_COLOR_PICKER_AREA, dt_bauhaus_combobox_new(self));
   dt_bauhaus_widget_set_label(g->auto_button, NULL, N_("auto tune levels"));
   gtk_widget_set_tooltip_text(g->auto_button, _("make an optimization with some guessing"));
-  gtk_box_pack_start(GTK_BOX(vbox_log), g->auto_button, TRUE, TRUE, 0);
+  dt_gui_box_add(vbox_log, g->auto_button);
 
   gtk_stack_add_named(GTK_STACK(g->mode_stack), vbox_log, "log");
 
   // start building top level widget
-  self->widget = gtk_box_new(GTK_ORIENTATION_VERTICAL, DT_BAUHAUS_SPACE);
+  self->widget = dt_gui_vbox();
 
   g->mode = dt_bauhaus_combobox_from_params(self, N_("mode"));
   gtk_widget_set_tooltip_text(g->mode, _("tone mapping method"));
 
-  gtk_box_pack_start(GTK_BOX(self->widget), g->mode_stack, TRUE, TRUE, 0);
+  dt_gui_box_add(self->widget, g->mode_stack);
 }
 
 

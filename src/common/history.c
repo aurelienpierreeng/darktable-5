@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2010-2024 darktable developers.
+    Copyright (C) 2010-2026 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -47,14 +47,14 @@ void dt_history_item_free(gpointer data)
 
 static void _remove_preset_flag(const dt_imgid_t imgid)
 {
-  dt_image_t *image = dt_image_cache_get(darktable.image_cache, imgid, 'w');
+  dt_image_t *image = dt_image_cache_get(imgid, 'w');
 
   // clear flag
   if(image)
     image->flags &= ~DT_IMAGE_AUTO_PRESETS_APPLIED;
 
   // write through to sql+xmp
-  dt_image_cache_write_release_info(darktable.image_cache, image,
+  dt_image_cache_write_release_info(image,
                                     DT_IMAGE_CACHE_SAFE,
                                     "_remove_preset_flag");
 }
@@ -63,7 +63,9 @@ void dt_history_delete_on_image_ext(const dt_imgid_t imgid,
                                     const gboolean undo,
                                     const gboolean init_history)
 {
-  dt_undo_lt_history_t *hist = undo?dt_history_snapshot_item_init():NULL;
+  if(!dt_is_valid_imgid(imgid))
+    return;
+  dt_undo_lt_history_t *hist = undo ? dt_history_snapshot_item_init() : NULL;
 
   if(undo)
   {
@@ -129,25 +131,24 @@ void dt_history_delete_on_image_ext(const dt_imgid_t imgid,
   }
 
   /* make sure mipmaps are recomputed */
-  dt_mipmap_cache_remove(darktable.mipmap_cache, imgid);
+  dt_mipmap_cache_remove(imgid);
   dt_image_update_final_size(imgid);
 
   /* remove darktable|style|* tags */
   dt_tag_detach_by_string("darktable|style|%", imgid, FALSE, FALSE);
   dt_tag_detach_by_string("darktable|changed", imgid, FALSE, FALSE);
-  /* signal that the tags may have changed */
-  DT_CONTROL_SIGNAL_RAISE(DT_SIGNAL_TAG_CHANGED);
+  /* We leave the signal that the tags may have changed to callers */
 
   /* unset change timestamp */
-  dt_image_cache_unset_change_timestamp(darktable.image_cache, imgid);
-
-  // signal that the mipmap need to be updated
-  DT_CONTROL_SIGNAL_RAISE(DT_SIGNAL_DEVELOP_MIPMAP_UPDATED, imgid);
-
-  dt_unlock_image(imgid);
+  dt_image_cache_unset_change_timestamp(imgid);
 
   // update history hash
   dt_history_hash_write_from_history(imgid, DT_HISTORY_HASH_CURRENT);
+
+  dt_unlock_image(imgid);
+
+  // signal that the mipmap need to be updated
+  DT_CONTROL_SIGNAL_RAISE(DT_SIGNAL_DEVELOP_MIPMAP_UPDATED, imgid);
 
   if(undo)
   {
@@ -164,16 +165,22 @@ void dt_history_delete_on_image_ext(const dt_imgid_t imgid,
 
 void dt_history_delete_on_image(const dt_imgid_t imgid)
 {
-  dt_history_delete_on_image_ext(imgid, TRUE, TRUE);
-  DT_CONTROL_SIGNAL_RAISE(DT_SIGNAL_TAG_CHANGED);
+  if(dt_is_valid_imgid(imgid))
+  {
+    dt_history_delete_on_image_ext(imgid, TRUE, TRUE);
+    DT_CONTROL_SIGNAL_RAISE(DT_SIGNAL_TAG_CHANGED);
+  }
 }
 
 gboolean dt_history_load_and_apply(const dt_imgid_t imgid,
                                    gchar *filename,
                                    const gboolean history_only)
 {
+  if(!dt_is_valid_imgid(imgid))
+    return FALSE;
+
   dt_lock_image(imgid);
-  dt_image_t *img = dt_image_cache_get(darktable.image_cache, imgid, 'w');
+  dt_image_t *img = dt_image_cache_get(imgid, 'w');
   if(img)
   {
     dt_undo_lt_history_t *hist = dt_history_snapshot_item_init();
@@ -182,8 +189,7 @@ gboolean dt_history_load_and_apply(const dt_imgid_t imgid,
 
     if(dt_exif_xmp_read(img, filename, history_only))
     {
-      dt_image_cache_write_release_info
-        (darktable.image_cache, img,
+      dt_image_cache_write_release_info(img,
          // ugly but if not history_only => called from crawler - do not write the xmp
          history_only ? DT_IMAGE_CACHE_SAFE : DT_IMAGE_CACHE_RELAXED,
          "dt_history_load_and_apply");
@@ -201,13 +207,13 @@ gboolean dt_history_load_and_apply(const dt_imgid_t imgid,
     if(dt_dev_is_current_image(darktable.develop, imgid))
       dt_dev_reload_history_items(darktable.develop);
 
-    dt_image_cache_write_release_info
-      (darktable.image_cache, img,
+    dt_image_cache_write_release_info(img,
        // ugly but if not history_only => called from crawler - do not write the xmp
        history_only ? DT_IMAGE_CACHE_SAFE : DT_IMAGE_CACHE_RELAXED,
        "dt_history_load_and_apply");
-    dt_mipmap_cache_remove(darktable.mipmap_cache, imgid);
+    dt_mipmap_cache_remove(imgid);
     dt_image_update_final_size(imgid);
+    dt_image_cache_set_change_timestamp(imgid);
   }
   dt_unlock_image(imgid);
   // signal that the mipmap need to be updated
@@ -218,6 +224,7 @@ gboolean dt_history_load_and_apply(const dt_imgid_t imgid,
 gboolean dt_history_load_and_apply_on_list(gchar *filename,
                                            const GList *list)
 {
+  dt_stop_backthumbs_crawler(FALSE);
   gboolean res = FALSE;
   dt_undo_start_group(darktable.undo, DT_UNDO_LT_HISTORY);
   for(GList *l = (GList *)list; l; l = g_list_next(l))
@@ -227,6 +234,7 @@ gboolean dt_history_load_and_apply_on_list(gchar *filename,
       res = TRUE;
   }
   dt_undo_end_group(darktable.undo);
+  dt_start_backthumbs_crawler();
   return res;
 }
 
@@ -746,7 +754,6 @@ static gboolean _history_copy_and_paste_on_image_overwrite(const dt_imgid_t imgi
                                                            const gboolean copy_iop_order,
                                                            const gboolean copy_full)
 {
-  gboolean ret_val = FALSE;
   sqlite3_stmt *stmt;
 
   // replace history stack
@@ -893,15 +900,13 @@ static gboolean _history_copy_and_paste_on_image_overwrite(const dt_imgid_t imgi
     DT_DEBUG_SQLITE3_BIND_INT(stmt, 2, dest_imgid);
     sqlite3_step(stmt);
     sqlite3_finalize(stmt);
+    return FALSE;
   }
   else
   {
     // since the history and masks where deleted we can do a merge
-    ret_val = _history_copy_and_paste_on_image_merge
-      (imgid, dest_imgid, ops, copy_iop_order, copy_full);
+    return _history_copy_and_paste_on_image_merge(imgid, dest_imgid, ops, copy_iop_order, copy_full);
   }
-
-  return ret_val;
 }
 
 gboolean dt_history_copy_and_paste_on_image(const dt_imgid_t imgid,
@@ -952,13 +957,9 @@ gboolean dt_history_copy_and_paste_on_image(const dt_imgid_t imgid,
     dt_ioppr_write_iop_order_list(iop_list, dest_imgid);
   }
 
-  gboolean ret_val = FALSE;
-  if(merge)
-    ret_val = _history_copy_and_paste_on_image_merge
-      (imgid, dest_imgid, ops, copy_iop_order, copy_full);
-  else
-    ret_val = _history_copy_and_paste_on_image_overwrite
-      (imgid, dest_imgid, ops, copy_iop_order, copy_full);
+  const gboolean ret_val = merge
+    ? _history_copy_and_paste_on_image_merge(imgid, dest_imgid, ops, copy_iop_order, copy_full)
+    : _history_copy_and_paste_on_image_overwrite(imgid, dest_imgid, ops, copy_iop_order, copy_full);
 
   if(iop_list)
   {
@@ -981,7 +982,7 @@ gboolean dt_history_copy_and_paste_on_image(const dt_imgid_t imgid,
   dt_tag_new("darktable|changed", &tagid);
   dt_tag_attach(tagid, dest_imgid, FALSE, FALSE);
   /* set change_timestamp */
-  dt_image_cache_set_change_timestamp(darktable.image_cache, dest_imgid);
+  dt_image_cache_set_change_timestamp(dest_imgid);
 
   /* if current image in develop reload history */
   if(dt_dev_is_current_image(darktable.develop, dest_imgid))
@@ -990,7 +991,7 @@ gboolean dt_history_copy_and_paste_on_image(const dt_imgid_t imgid,
     dt_dev_modulegroups_set(darktable.develop, dt_dev_modulegroups_get(darktable.develop));
   }
 
-  dt_mipmap_cache_remove(darktable.mipmap_cache, dest_imgid);
+  dt_mipmap_cache_remove(dest_imgid);
   dt_image_update_final_size(imgid);
 
   /* update the aspect ratio. recompute only if really needed for
@@ -1012,14 +1013,15 @@ gboolean dt_history_copy_and_paste_on_image(const dt_imgid_t imgid,
   return !ret_val;
 }
 
-char *dt_history_item_as_string(const char *name, const gboolean enabled)
+static char *_history_item_as_string(const char *name, const gboolean enabled)
 {
   return g_strconcat(enabled ? "●" : "○", "  ", name, NULL);
 }
 
 char *dt_history_get_name_label(const char *name,
                                 const char *label,
-                                const gboolean markup)
+                                const gboolean markup,
+                                const gboolean hand_edited)
 {
   char *result = NULL;
 
@@ -1031,8 +1033,15 @@ char *dt_history_get_name_label(const char *name,
   }
   else
   {
-    result = markup ? g_markup_printf_escaped("%s • <small>%s</small>", name, label)
-                    : g_markup_printf_escaped("%s • %s", name, label);
+    char *l_label = hand_edited
+      ? g_strdup (label)
+      : dt_util_localize_segmented_name(label, FALSE);
+
+    result = markup
+      ? g_markup_printf_escaped("%s • <small>%s</small>", name, l_label)
+      : g_markup_printf_escaped("%s • %s", name, l_label);
+
+    g_free(l_label);
   }
 
   return result;
@@ -1043,15 +1052,19 @@ GList *dt_history_get_items(const dt_imgid_t imgid,
                             const gboolean multi_priority_order,
                             const gboolean markup)
 {
+  if(!dt_is_valid_imgid(imgid))
+    return NULL;
+
   GList *result = NULL;
   sqlite3_stmt *stmt;
 
   gchar *query = g_strdup_printf
-    ("SELECT num, operation, enabled, multi_name, blendop_params"
+    ("SELECT num, operation, enabled, multi_name, blendop_params,"
+     "       multi_name_hand_edited"
      " FROM main.history"
      " WHERE imgid=?1"
      "   AND enabled in (1, ?2)"
-     " GROUP BY num, operation, multi_priority"
+     " GROUP BY operation || multi_name, multi_priority"
      " ORDER BY %s DESC, %s DESC",
      multi_priority_order ? "multi_priority" : "num",
      multi_priority_order ? "num" : "multi_priority");
@@ -1074,13 +1087,15 @@ GList *dt_history_get_items(const dt_imgid_t imgid,
     // first uint32_t of blend_params is the mode
     const uint32_t *blend_params = (uint32_t *)sqlite3_column_blob(stmt, 4);
     const int blend_params_len = sqlite3_column_bytes(stmt, 4);
+    const int hand_edited = sqlite3_column_int(stmt, 5);
     item->num = sqlite3_column_int(stmt, 0);
     item->enabled = sqlite3_column_int(stmt, 2);
     item->mask_mode = blend_params_len > 0 ? blend_params[0] : DEVELOP_MASK_DISABLED;
 
     const char *mname = (char *)sqlite3_column_text(stmt, 3);
 
-    item->name = dt_history_get_name_label(dt_iop_get_localized_name(op), mname, markup);
+    item->name = dt_history_get_name_label(dt_iop_get_localized_name(op),
+                                           mname, markup, hand_edited);
     item->op = g_strdup(op);
     result = g_list_prepend(result, item);
   }
@@ -1092,6 +1107,9 @@ GList *dt_history_get_items(const dt_imgid_t imgid,
 
 char *dt_history_get_items_as_string(const dt_imgid_t imgid)
 {
+  if(!dt_is_valid_imgid(imgid))
+    return NULL;
+
   GList *items = NULL;
   sqlite3_stmt *stmt;
   // clang-format off
@@ -1112,7 +1130,7 @@ char *dt_history_get_items_as_string(const dt_imgid_t imgid)
     if(mn && *mn && g_strcmp0(mn, " ") != 0 && g_strcmp0(mn, "0") != 0)
       multi_name = g_strconcat(" ", sqlite3_column_text(stmt, 2), NULL);
 
-    char *iname = dt_history_item_as_string
+    char *iname = _history_item_as_string
       (dt_iop_get_localized_name((char *)sqlite3_column_text(stmt, 0)),
        sqlite3_column_int(stmt, 1));
 
@@ -1129,7 +1147,7 @@ char *dt_history_get_items_as_string(const dt_imgid_t imgid)
   return result;
 }
 
-static int dt_history_end_attop(const dt_imgid_t imgid)
+static int _history_end_attop(const dt_imgid_t imgid)
 {
   int size=0;
   int end=0;
@@ -1174,6 +1192,8 @@ static int dt_history_end_attop(const dt_imgid_t imgid)
 */
 void dt_history_compress_on_image(const dt_imgid_t imgid)
 {
+  if(!dt_is_valid_imgid(imgid))
+    return;
   dt_lock_image(imgid);
   sqlite3_stmt *stmt;
 
@@ -1328,6 +1348,9 @@ void dt_history_compress_on_image(const dt_imgid_t imgid)
 void dt_history_truncate_on_image(const dt_imgid_t imgid,
                                   const int32_t history_end)
 {
+  if(!dt_is_valid_imgid(imgid))
+    return;
+
   dt_lock_image(imgid);
   sqlite3_stmt *stmt;
 
@@ -1377,8 +1400,11 @@ void dt_history_truncate_on_image(const dt_imgid_t imgid,
 
 gboolean dt_history_compress(const dt_imgid_t imgid)
 {
+  if(!dt_is_valid_imgid(imgid))
+    return FALSE;
+
   dt_lock_image(imgid);
-  const int test = dt_history_end_attop(imgid);
+  const int test = _history_end_attop(imgid);
   if(test == 1) // we do a compression and we know for sure history_end is at the top!
   {
     dt_history_compress_on_image(imgid);
@@ -1450,6 +1476,9 @@ gboolean dt_history_check_module_exists(const dt_imgid_t imgid,
                                         const char *operation,
                                         const gboolean enabled)
 {
+  if(!dt_is_valid_imgid(imgid))
+    return FALSE;
+
   gboolean result = FALSE;
   sqlite3_stmt *stmt;
 
@@ -1512,7 +1541,7 @@ GList *dt_history_duplicate(GList *hist)
       {
         // nothing else to do
         dt_print(DT_DEBUG_ALWAYS, "[_duplicate_history]"
-                 " can't find base module for %s\n", old->op_name);
+                 " can't find base module for %s", old->op_name);
       }
     }
 
@@ -1694,6 +1723,8 @@ void dt_history_hash_write_from_history(const dt_imgid_t imgid,
 void dt_history_hash_write(const dt_imgid_t imgid,
                            const dt_history_hash_values_t *const hash)
 {
+  if(!dt_is_valid_imgid(imgid))
+    return;
   if(hash->basic || hash->auto_apply || hash->current)
   {
     sqlite3_stmt *stmt;
@@ -1905,6 +1936,8 @@ gboolean dt_history_paste(const dt_imgid_t imgid,
 gboolean dt_history_delete(const dt_imgid_t imgid,
                            const gboolean undo)
 {
+  if(!dt_is_valid_imgid(imgid))
+    return TRUE;
   if(undo)
   {
     dt_undo_lt_history_t *hist = dt_history_snapshot_item_init();

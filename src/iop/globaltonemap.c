@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2012-2024 darktable developers.
+    Copyright (C) 2012-2026 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -15,9 +15,6 @@
     You should have received a copy of the GNU General Public License
     along with darktable.  If not, see <http://www.gnu.org/licenses/>.
 */
-#ifdef HAVE_CONFIG_H
-#include "config.h"
-#endif
 #include "bauhaus/bauhaus.h"
 #include "common/bilateral.h"
 #include "common/bilateralcl.h"
@@ -206,17 +203,17 @@ static inline void process_drago(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *
   // Drago needs the absolute Lmax value of the image. In pixelpipe FULL we can not reliably get this value
   // as the pixelpipe might only see part of the image (region of interest). Therefore we try to get lwmax from
   // the PREVIEW pixelpipe which luckily stores it for us.
-  if(self->dev->gui_attached && g && (piece->pipe->type & DT_DEV_PIXELPIPE_FULL))
+  if(self->dev->gui_attached && g && dt_pipe_is_full(piece->pipe))
   {
     dt_iop_gui_enter_critical_section(self);
     const dt_hash_t hash = g->hash;
     dt_iop_gui_leave_critical_section(self);
 
-    // note that the case 'hash == 0' on first invocation in a session implies that g->lwmax
+    // note that the case 'hash == DT_INVALID_HASH' on first invocation in a session implies that g->lwmax
     // is -FLT_MAX which initiates special handling below to avoid inconsistent results. in all
     // other cases we make sure that the preview pipe has left us with proper readings for
     // lwmax. if data are not yet there we need to wait (with timeout).
-    if(hash != 0 && !dt_dev_sync_pixelpipe_hash(self->dev, piece->pipe, self->iop_order, DT_DEV_TRANSFORM_DIR_BACK_INCL, &self->gui_lock, &g->hash))
+    if(hash != DT_INVALID_HASH && !dt_dev_sync_pixelpipe_hash(self->dev, piece->pipe, self->iop_order, DT_DEV_TRANSFORM_DIR_BACK_INCL, &self->gui_lock, &g->hash))
       dt_control_log(_("inconsistent output"));
 
     dt_iop_gui_enter_critical_section(self);
@@ -241,7 +238,7 @@ static inline void process_drago(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *
   }
 
   // PREVIEW pixelpipe stores lwmax
-  if(self->dev->gui_attached && g && (piece->pipe->type & DT_DEV_PIXELPIPE_PREVIEW))
+  if(self->dev->gui_attached && g && dt_pipe_is_preview(piece->pipe))
   {
     dt_hash_t hash = dt_dev_hash_plus(self->dev, piece->pipe, self->iop_order, DT_DEV_TRANSFORM_DIR_BACK_INCL);
     dt_iop_gui_enter_critical_section(self);
@@ -366,12 +363,12 @@ int process_cl(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_mem dev_
     float tmp_lwmax = -FLT_MAX;
 
     // see comments in process() about lwmax value
-    if(self->dev->gui_attached && g && (piece->pipe->type & DT_DEV_PIXELPIPE_FULL))
+    if(self->dev->gui_attached && g && dt_pipe_is_full(piece->pipe))
     {
       dt_iop_gui_enter_critical_section(self);
       const dt_hash_t hash = g->hash;
       dt_iop_gui_leave_critical_section(self);
-      if(hash != 0 && !dt_dev_sync_pixelpipe_hash(self->dev, piece->pipe, self->iop_order, DT_DEV_TRANSFORM_DIR_BACK_INCL, &self->gui_lock, &g->hash))
+      if(hash != DT_INVALID_HASH && !dt_dev_sync_pixelpipe_hash(self->dev, piece->pipe, self->iop_order, DT_DEV_TRANSFORM_DIR_BACK_INCL, &self->gui_lock, &g->hash))
         dt_control_log(_("inconsistent output"));
 
       dt_iop_gui_enter_critical_section(self);
@@ -386,11 +383,8 @@ int process_cl(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_mem dev_
                                       .cellsize = sizeof(float), .overhead = 0,
                                       .sizex = 1 << 4, .sizey = 1 << 4 };
 
-      if(!dt_opencl_local_buffer_opt(devid, gd->kernel_pixelmax_first, &flocopt))
-      {
-        err = CL_INVALID_WORK_DIMENSION;
-        goto finally;
-      }
+      err = dt_opencl_local_buffer_opt(devid, gd->kernel_pixelmax_first, &flocopt);
+      if(err != CL_SUCCESS) goto finally;
 
       const size_t bwidth = ROUNDUP(width, flocopt.sizex);
       const size_t bheight = ROUNDUP(height, flocopt.sizey);
@@ -402,16 +396,13 @@ int process_cl(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_mem dev_
                                       .cellsize = sizeof(float), .overhead = 0,
                                       .sizex = 1 << 16, .sizey = 1 };
 
-      if(!dt_opencl_local_buffer_opt(devid, gd->kernel_pixelmax_second, &slocopt))
-      {
-        err = CL_INVALID_WORK_DIMENSION;
-        goto finally;
-      }
+      err = dt_opencl_local_buffer_opt(devid, gd->kernel_pixelmax_second, &slocopt);
+      if(err != CL_SUCCESS) goto finally;
 
       const int reducesize = MIN(REDUCESIZE, ROUNDUP(bufsize, slocopt.sizex) / slocopt.sizex);
 
-      size_t sizes[3];
-      size_t local[3];
+      size_t sizes[2];
+      size_t local[2];
 
       dev_m = dt_opencl_alloc_device_buffer(devid, sizeof(float) * bufsize);
       if(dev_m == NULL) goto finally;
@@ -421,24 +412,20 @@ int process_cl(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_mem dev_
 
       sizes[0] = bwidth;
       sizes[1] = bheight;
-      sizes[2] = 1;
       local[0] = flocopt.sizex;
       local[1] = flocopt.sizey;
-      local[2] = 1;
-      dt_opencl_set_kernel_args(devid, gd->kernel_pixelmax_first, 0, CLARG(dev_in), CLARG(width), CLARG(height),
+      err = dt_opencl_enqueue_kernel_2d_local_args(devid, gd->kernel_pixelmax_first, sizes, local,
+        CLARG(dev_in), CLARG(width), CLARG(height),
         CLARG(dev_m), CLLOCAL(sizeof(float) * flocopt.sizex * flocopt.sizey));
-      err = dt_opencl_enqueue_kernel_2d_with_local(devid, gd->kernel_pixelmax_first, sizes, local);
       if(err != CL_SUCCESS) goto finally;
 
       sizes[0] = (size_t)reducesize * slocopt.sizex;
       sizes[1] = 1;
-      sizes[2] = 1;
       local[0] = slocopt.sizex;
       local[1] = 1;
-      local[2] = 1;
-      dt_opencl_set_kernel_args(devid, gd->kernel_pixelmax_second, 0, CLARG(dev_m), CLARG(dev_r), CLARG(bufsize),
+      err = dt_opencl_enqueue_kernel_2d_local_args(devid, gd->kernel_pixelmax_second, sizes, local,
+        CLARG(dev_m), CLARG(dev_r), CLARG(bufsize),
         CLLOCAL(sizeof(float) * slocopt.sizex));
-      err = dt_opencl_enqueue_kernel_2d_with_local(devid, gd->kernel_pixelmax_second, sizes, local);
       if(err != CL_SUCCESS) goto finally;
 
       maximum = dt_alloc_align_float((size_t)reducesize);
@@ -448,7 +435,7 @@ int process_cl(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_mem dev_
         goto finally;
       }
       err = dt_opencl_read_buffer_from_device(devid, (void *)maximum, dev_r, 0,
-                                            sizeof(float) * reducesize, CL_TRUE);
+                                            sizeof(float) * reducesize, TRUE);
       if(err != CL_SUCCESS) goto finally;
 
       dt_opencl_release_mem_object(dev_r);
@@ -477,7 +464,7 @@ int process_cl(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_mem dev_
     parameters[2] = bl;
     parameters[3] = lwmax;
 
-    if(self->dev->gui_attached && g && (piece->pipe->type & DT_DEV_PIXELPIPE_PREVIEW))
+    if(self->dev->gui_attached && g && dt_pipe_is_preview(piece->pipe))
     {
       dt_hash_t hash = dt_dev_hash_plus(self->dev, piece->pipe, self->iop_order, DT_DEV_TRANSFORM_DIR_BACK_INCL);
       dt_iop_gui_enter_critical_section(self);
@@ -549,9 +536,7 @@ void tiling_callback(dt_iop_module_t *self, struct dt_dev_pixelpipe_iop_t *piece
       = (detail ? MAX(1.0f, (float)dt_bilateral_singlebuffer_size2(width, height, sigma_s, sigma_r) / basebuffer) : 1.0f);
   tiling->overhead = 0;
   tiling->overlap = (detail ? ceilf(4 * sigma_s) : 0);
-  tiling->xalign = 1;
-  tiling->yalign = 1;
-  return;
+  tiling->align = 1;
 }
 
 void commit_params(dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pixelpipe_t *pipe,
@@ -570,7 +555,7 @@ void commit_params(dt_iop_module_t *self, dt_iop_params_t *p1, dt_dev_pixelpipe_
 
 #ifdef HAVE_OPENCL
   if(d->detail != 0.0f)
-    piece->process_cl_ready = (piece->process_cl_ready && !dt_opencl_micro_nap(pipe->devid));
+    piece->process_cl_ready = (piece->process_cl_ready && !dt_opencl_avoid_atomics(pipe->devid));
 #endif
 }
 
@@ -630,7 +615,7 @@ void gui_update(dt_iop_module_t *self)
 
   dt_iop_gui_enter_critical_section(self);
   g->lwmax = -FLT_MAX;
-  g->hash = 0;
+  g->hash = DT_INVALID_HASH;
   dt_iop_gui_leave_critical_section(self);
 }
 
@@ -639,7 +624,7 @@ void gui_init(dt_iop_module_t *self)
   dt_iop_global_tonemap_gui_data_t *g = IOP_GUI_ALLOC(global_tonemap);
 
   g->lwmax = -FLT_MAX;
-  g->hash = 0;
+  g->hash = DT_INVALID_HASH;
 
   g->operator = dt_bauhaus_combobox_from_params(self, N_("operator"));
   gtk_widget_set_tooltip_text(g->operator, _("the global tonemap operator"));
@@ -653,11 +638,6 @@ void gui_init(dt_iop_module_t *self)
 
   g->detail = dt_bauhaus_slider_from_params(self, N_("detail"));
   dt_bauhaus_slider_set_digits(g->detail, 3);
-}
-
-void gui_cleanup(dt_iop_module_t *self)
-{
-  IOP_GUI_FREE;
 }
 
 // clang-format off

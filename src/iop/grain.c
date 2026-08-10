@@ -16,9 +16,6 @@
     along with darktable.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-#ifdef HAVE_CONFIG_H
-#include "config.h"
-#endif
 #include <assert.h>
 #include <stdlib.h>
 #include <string.h>
@@ -445,7 +442,7 @@ void process(dt_iop_module_t *self,
 
   unsigned int hash = _hash_string(piece->pipe->image.filename) % (int)fmax(roi_out->width * 0.3, 1.0);
 
-  const gboolean fastmode = piece->pipe->type & DT_DEV_PIXELPIPE_FAST;
+  const gboolean fastmode = dt_pipe_is_fast(piece->pipe);
   // Apply grain to image
   const float strength = (data->strength / 100.0f);
   // double zoom=1.0+(8*(data->scale/100.0));

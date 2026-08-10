@@ -24,6 +24,7 @@
 #include <gtk/gtk.h>
 
 #include "common/darktable.h"
+#include "common/mipmap_cache.h"
 
 #define MAX_STARS 5
 #define IMG_TO_FIT 0.0f
@@ -52,7 +53,8 @@ typedef enum dt_thumbnail_container_t
 {
   DT_THUMBNAIL_CONTAINER_LIGHTTABLE,
   DT_THUMBNAIL_CONTAINER_CULLING,
-  DT_THUMBNAIL_CONTAINER_PREVIEW
+  DT_THUMBNAIL_CONTAINER_PREVIEW,
+  DT_THUMBNAIL_CONTAINER_DUPLICATE
 } dt_thumbnail_container_t;
 
 typedef enum dt_thumbnail_selection_mode_t
@@ -87,6 +89,7 @@ typedef struct
   gchar *info_line;
   gboolean is_altered;
   gboolean has_audio;
+  gboolean has_tags;
   gboolean is_grouped;
   gboolean is_bw;
   gboolean is_bw_flow;
@@ -105,6 +108,16 @@ typedef struct
   cairo_surface_t *img_surf; // cached surface at exact dimensions to speed up redraw
   gboolean img_surf_preview; // if TRUE, the image is originated from preview pipe
   gboolean img_surf_dirty;   // if TRUE, we need to recreate the surface on next drawing code
+  gboolean zoom_preview_pending; // TRUE during active gesture: draw stale surface scaled, defer surface reload
+  float img_surf_zoom; // the thumb->zoom value img_surf was actually rendered at.
+                       // During a deferred gesture thumb->zoom advances while img_surf
+                       // (and img_width/img_height) stay at this value, so bound math
+                       // scales the real surface extent by (zoom / img_surf_zoom).
+  // Cache of the native-resolution (pre-scaling) color-converted mipmap surface.
+  // Reused across zoom events at the same mipmap level so the expensive
+  // calloc + color-transform is only done once per mip-level transition.
+  cairo_surface_t *img_surf_mip_native;
+  dt_mipmap_size_t img_surf_mip_level; // which mipmap level img_surf_mip_native covers
 
   GtkWidget *w_cursor;    // GtkDrawingArea -- triangle to show current image(s) in filmstrip
   GtkWidget *w_bottom_eb; // GtkEventBox -- background of the bottom infos area (contains w_bottom)
@@ -116,6 +129,7 @@ typedef struct
   GtkWidget *w_local_copy; // GtkDarktableThumbnailBtn -- localcopy triangle
   GtkWidget *w_altered;    // GtkDarktableThumbnailBtn -- Altered icon
   GtkWidget *w_group;      // GtkDarktableThumbnailBtn -- Grouping icon
+  GtkWidget *w_tags;       // GtkDarktableThumbnailBtn -- Tags icon
   GtkWidget *w_audio;      // GtkDarktableThumbnailBtn -- Audio sidecar icon
 
   GtkWidget *w_zoom_eb; // GtkEventBox -- container for the zoom level widget
@@ -189,8 +203,17 @@ void dt_thumbnail_update_selection(dt_thumbnail_t *thumb);
 void dt_thumbnail_set_selection(dt_thumbnail_t *thumb,
                                 const gboolean selected);
 
-// force image recomputing
+// force image recomputing (use this when image content changes)
 void dt_thumbnail_image_refresh(dt_thumbnail_t *thumb);
+// force image recomputing for zoom changes only: marks the surface
+// dirty but preserves the native mipmap surface cache so the expensive
+// color conversion step can be skipped on the next redraw when the
+// zoom stays within the same mipmap bucket.
+void dt_thumbnail_image_refresh_zoom(dt_thumbnail_t *thumb);
+// instant zoom preview: skip surface reload, just queue a redraw and let
+// _thumb_draw_image rescale the stale surface via cairo transform.
+// Call dt_culling_zoom_end() to trigger the deferred surface reload.
+void dt_thumbnail_image_preview_zoom(dt_thumbnail_t *thumb);
 
 // do we need to display simple overlays or extended ?
 void dt_thumbnail_set_overlay(dt_thumbnail_t *thumb,

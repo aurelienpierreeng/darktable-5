@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2019-2024 darktable developers.
+    Copyright (C) 2019-2026 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -15,10 +15,6 @@
     You should have received a copy of the GNU General Public License
     along with darktable.  If not, see <http://www.gnu.org/licenses/>.
 */
-
-#ifdef HAVE_CONFIG_H
-#include "config.h"
-#endif
 
 #include "common/iop_profile.h"
 #include "bauhaus/bauhaus.h"
@@ -168,11 +164,11 @@ static void _develop_ui_pipe_finished_callback(gpointer instance, dt_iop_module_
     g->call_auto_levels = 0;
     dt_iop_gui_leave_critical_section(self);
 
-    ++darktable.gui->reset;
+    DT_ENTER_GUI_UPDATE();
 
     gui_update(self);
 
-    --darktable.gui->reset;
+    DT_LEAVE_GUI_UPDATE();
   }
   else
   {
@@ -309,13 +305,13 @@ int button_pressed(dt_iop_module_t *self,
   dt_iop_rgblevels_gui_data_t *g = self->gui_data;
   if(g && g->draw_selected_region && self->enabled)
   {
-    if((which == 3) || (which == 1 && type == GDK_2BUTTON_PRESS))
+    if((which == GDK_BUTTON_SECONDARY) || (which == GDK_BUTTON_PRIMARY && type == GDK_2BUTTON_PRESS))
     {
       _turn_selregion_picker_off(self);
 
       handled = 1;
     }
-    else if(which == 1)
+    else if(which == GDK_BUTTON_PRIMARY)
     {
       float wd, ht;
       dt_dev_get_preview_size(self->dev, &wd, &ht);
@@ -468,8 +464,7 @@ static gboolean _area_draw_callback(GtkWidget *widget,
     float hist_max;
 
     if(p->autoscale == DT_IOP_RGBLEVELS_LINKED_CHANNELS)
-      hist_max = fmaxf(self->histogram_max[DT_IOP_RGBLEVELS_R],
-                       fmaxf(self->histogram_max[DT_IOP_RGBLEVELS_G],self->histogram_max[DT_IOP_RGBLEVELS_B]));
+      hist_max = max3ui(self->histogram_max);
     else
       hist_max = self->histogram_max[ch];
 
@@ -607,7 +602,7 @@ static gboolean _area_button_press_callback(GtkWidget *widget,
                                             dt_iop_module_t *self)
 {
   // set active point
-  if(event->button == 1)
+  if(event->button == GDK_BUTTON_PRIMARY)
   {
     if(darktable.develop->gui_module != self) dt_iop_request_focus(self);
 
@@ -645,7 +640,7 @@ static gboolean _area_button_release_callback(GtkWidget *widget,
                                               GdkEventButton *event,
                                               dt_iop_module_t *self)
 {
-  if(event->button == 1)
+  if(event->button == GDK_BUTTON_PRIMARY)
   {
     dt_iop_rgblevels_gui_data_t *g = self->gui_data;
     g->dragging = 0;
@@ -688,7 +683,7 @@ static gboolean _area_scroll_callback(GtkWidget *widget,
 static void _auto_levels_callback(GtkButton *button,
                                   dt_iop_module_t *self)
 {
-  if(darktable.gui->reset) return;
+  DT_GUARD_GUI_UPDATE();
 
   dt_iop_rgblevels_gui_data_t *g = self->gui_data;
 
@@ -715,7 +710,7 @@ static void _auto_levels_callback(GtkButton *button,
 static void _select_region_toggled_callback(GtkToggleButton *togglebutton,
                                             dt_iop_module_t *self)
 {
-  if(darktable.gui->reset) return;
+  DT_GUARD_GUI_UPDATE();
 
   dt_iop_rgblevels_gui_data_t *g = self->gui_data;
 
@@ -763,7 +758,7 @@ static void _tab_switch_callback(GtkNotebook *notebook,
                                  const guint page_num,
                                  dt_iop_module_t *self)
 {
-  if(darktable.gui->reset) return;
+  DT_GUARD_GUI_UPDATE();
   dt_iop_rgblevels_gui_data_t *g = self->gui_data;
 
   g->channel = (dt_iop_rgblevels_channel_t)page_num;
@@ -852,7 +847,7 @@ void commit_params(dt_iop_module_t *self,
   dt_iop_rgblevels_data_t *d = piece->data;
   dt_iop_rgblevels_params_t *p = (dt_iop_rgblevels_params_t *)p1;
 
-  if(pipe->type & DT_DEV_PIXELPIPE_PREVIEW)
+  if(dt_pipe_is_preview(pipe))
     piece->request_histogram |= DT_REQUEST_ON;
   else
     piece->request_histogram &= ~DT_REQUEST_ON;
@@ -974,6 +969,8 @@ static float _action_process(gpointer target,
                              const dt_action_effect_t effect,
                              float move_size)
 {
+  if(element >= DT_IOP_RGBLEVELS_MAX_CHANNELS) return DT_ACTION_NOT_VALID;
+
   dt_iop_module_t *self = g_object_get_data(G_OBJECT(target), "iop-instance");
   dt_iop_rgblevels_gui_data_t *g = self->gui_data;
   dt_iop_rgblevels_params_t *p = self->params;
@@ -1044,13 +1041,10 @@ void gui_init(dt_iop_module_t *self)
   dt_ui_notebook_page(g->channel_tabs, N_("B"), _("curve nodes for b channel"));
   g_signal_connect(G_OBJECT(g->channel_tabs), "switch_page",
                    G_CALLBACK(_tab_switch_callback), self);
-  gtk_box_pack_start(GTK_BOX(self->widget), GTK_WIDGET(g->channel_tabs), FALSE, FALSE, 0);
 
   g->area = GTK_DRAWING_AREA(dt_ui_resize_wrap(NULL,
                                                0,
                                                "plugins/darkroom/rgblevels/graphheight"));
-
-  gtk_box_pack_start(GTK_BOX(self->widget), GTK_WIDGET(g->area), TRUE, TRUE, 0);
 
   g_object_set_data(G_OBJECT(g->area), "iop-instance", self);
   dt_action_define_iop(self, NULL, N_("levels"), GTK_WIDGET(g->area), &_action_def_levels);
@@ -1071,36 +1065,18 @@ void gui_init(dt_iop_module_t *self)
   g_signal_connect(G_OBJECT(g->area), "scroll-event",
                    G_CALLBACK(_area_scroll_callback), self);
 
-  g->blackpick = dt_color_picker_new(self, DT_COLOR_PICKER_POINT, NULL);
-  dt_action_define_iop(self, N_("pickers"), N_("black"), g->blackpick,
-                       &dt_action_def_toggle);
-  gtk_widget_set_tooltip_text(g->blackpick, _("pick black point from image"));
-  gtk_widget_set_name(GTK_WIDGET(g->blackpick), "picker-black");
-  g_signal_connect(G_OBJECT(g->blackpick), "toggled",
+#define PICKER_SETUP(color, name, tooltip)                                 \
+  g->color##pick = dt_color_picker_new(self, DT_COLOR_PICKER_POINT, NULL); \
+  dt_action_define_iop(self, N_("pickers"), name, g->color##pick,          \
+                       &dt_action_def_toggle);                             \
+  gtk_widget_set_tooltip_text(g->color##pick, tooltip);                    \
+  gtk_widget_set_name(GTK_WIDGET(g->color##pick), "picker-"#color);        \
+  g_signal_connect(dt_gui_expand(g->color##pick), "toggled",               \
                    G_CALLBACK(_color_picker_callback), self);
 
-  g->greypick = dt_color_picker_new(self, DT_COLOR_PICKER_POINT, NULL);
-  dt_action_define_iop(self, N_("pickers"), N_("gray"), g->greypick,
-                       &dt_action_def_toggle);
-  gtk_widget_set_tooltip_text(g->greypick, _("pick medium gray point from image"));
-  gtk_widget_set_name(GTK_WIDGET(g->greypick), "picker-grey");
-  g_signal_connect(G_OBJECT(g->greypick), "toggled",
-                   G_CALLBACK(_color_picker_callback), self);
-
-  g->whitepick = dt_color_picker_new(self, DT_COLOR_PICKER_POINT, NULL);
-  dt_action_define_iop(self, N_("pickers"), N_("white"), g->whitepick,
-                       &dt_action_def_toggle);
-  gtk_widget_set_tooltip_text(g->whitepick, _("pick white point from image"));
-  gtk_widget_set_name(GTK_WIDGET(g->whitepick), "picker-white");
-  g_signal_connect(G_OBJECT(g->whitepick), "toggled",
-                   G_CALLBACK(_color_picker_callback), self);
-
-  GtkWidget *pick_hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
-  gtk_box_pack_start(GTK_BOX(pick_hbox), GTK_WIDGET(g->blackpick), TRUE, TRUE, 0);
-  gtk_box_pack_start(GTK_BOX(pick_hbox), GTK_WIDGET(g->greypick ), TRUE, TRUE, 0);
-  gtk_box_pack_start(GTK_BOX(pick_hbox), GTK_WIDGET(g->whitepick), TRUE, TRUE, 0);
-
-  gtk_box_pack_start(GTK_BOX(self->widget), pick_hbox, TRUE, TRUE, 0);
+  PICKER_SETUP(black, N_("black"), _("pick black point from image"));
+  PICKER_SETUP(grey,  N_("gray"),  _("pick medium gray point from image"));
+  PICKER_SETUP(white, N_("white"), _("pick white point from image"));
 
   g->bt_auto_levels = gtk_button_new_with_label(_("auto"));
   dt_action_define_iop(self, NULL, N_("auto levels"), g->bt_auto_levels,
@@ -1116,12 +1092,9 @@ void gui_init(dt_iop_module_t *self)
                                 "click and drag to draw the area\n"
                                 "right-click to cancel"));
 
-  GtkWidget *autolevels_box =
-    gtk_box_new(GTK_ORIENTATION_HORIZONTAL, DT_PIXEL_APPLY_DPI(10));
-  gtk_box_pack_start(GTK_BOX(autolevels_box), g->bt_auto_levels, TRUE, TRUE, 0);
-  gtk_box_pack_start(GTK_BOX(autolevels_box), g->bt_select_region, TRUE, TRUE, 0);
-
-  gtk_box_pack_start(GTK_BOX(self->widget), autolevels_box, TRUE, TRUE, 0);
+  dt_gui_box_add(self->widget, g->channel_tabs, g->area,
+                 dt_gui_hbox(g->blackpick, g->greypick, g->whitepick),
+                 dt_gui_hbox(dt_gui_expand(g->bt_auto_levels), dt_gui_expand(g->bt_select_region)));
 
   g_signal_connect(G_OBJECT(g->bt_auto_levels), "clicked",
                    G_CALLBACK(_auto_levels_callback), self);
@@ -1133,14 +1106,7 @@ void gui_init(dt_iop_module_t *self)
                               _("method to preserve colors when applying contrast"));
 
   // add signal handler for preview pipe finish
-  DT_CONTROL_SIGNAL_CONNECT(DT_SIGNAL_DEVELOP_PREVIEW_PIPE_FINISHED, _develop_ui_pipe_finished_callback, self);
-}
-
-void gui_cleanup(dt_iop_module_t *self)
-{
-  DT_CONTROL_SIGNAL_DISCONNECT(_develop_ui_pipe_finished_callback, self);
-
-  IOP_GUI_FREE;
+  DT_CONTROL_SIGNAL_HANDLE(DT_SIGNAL_DEVELOP_PREVIEW_PIPE_FINISHED, _develop_ui_pipe_finished_callback);
 }
 
 static void _get_selected_area(dt_iop_module_t *self,
@@ -1301,10 +1267,10 @@ void process(dt_iop_module_t *self,
     dt_ioppr_get_pipe_work_profile_info(piece->pipe);
 
   // process auto levels
-  if(g && (piece->pipe->type & DT_DEV_PIXELPIPE_PREVIEW))
+  if(g && dt_pipe_is_preview(piece->pipe))
   {
     dt_iop_gui_enter_critical_section(self);
-    if(g->call_auto_levels == 1 && !darktable.gui->reset)
+    if(g->call_auto_levels == 1 && !DT_IN_GUI_UPDATE())
     {
       g->call_auto_levels = -1;
 
@@ -1454,10 +1420,10 @@ int process_cl(dt_iop_module_t *self,
   const int height = roi_out->height;
 
   // process auto levels
-  if(g && (piece->pipe->type & DT_DEV_PIXELPIPE_PREVIEW))
+  if(g && dt_pipe_is_preview(piece->pipe))
   {
     dt_iop_gui_enter_critical_section(self);
-    if(g->call_auto_levels == 1 && !darktable.gui->reset)
+    if(g->call_auto_levels == 1 && !DT_IN_GUI_UPDATE())
     {
       g->call_auto_levels = -1;
 
@@ -1473,7 +1439,7 @@ int process_cl(dt_iop_module_t *self,
         goto cleanup;
       }
 
-      err = dt_opencl_copy_device_to_host(devid, src_buffer,
+      err = dt_opencl_copy_image_to_host(devid, src_buffer,
                                           dev_in, width, height, ch * sizeof(float));
       if(err != CL_SUCCESS)
       {
@@ -1505,19 +1471,19 @@ int process_cl(dt_iop_module_t *self,
   const int autoscale = d->params.autoscale;
   const int preserve_colors = d->params.preserve_colors;
 
-  dev_lutr = dt_opencl_copy_host_to_device(devid, d->lut[0], 256, 256, sizeof(float));
+  dev_lutr = dt_opencl_copy_host_to_image(devid, d->lut[0], 256, 256, sizeof(float));
   if(dev_lutr == NULL)
   {
     err = CL_MEM_OBJECT_ALLOCATION_FAILURE;
     goto cleanup;
   }
-  dev_lutg = dt_opencl_copy_host_to_device(devid, d->lut[1], 256, 256, sizeof(float));
+  dev_lutg = dt_opencl_copy_host_to_image(devid, d->lut[1], 256, 256, sizeof(float));
   if(dev_lutg == NULL)
   {
     err = CL_MEM_OBJECT_ALLOCATION_FAILURE;
     goto cleanup;
   }
-  dev_lutb = dt_opencl_copy_host_to_device(devid, d->lut[2], 256, 256, sizeof(float));
+  dev_lutb = dt_opencl_copy_host_to_image(devid, d->lut[2], 256, 256, sizeof(float));
   if(dev_lutb == NULL)
   {
     err = CL_MEM_OBJECT_ALLOCATION_FAILURE;

@@ -1,4 +1,4 @@
-#   Doxygen API docs and code-health panel for the frozen darktable 5.0 reference tree.
+#   Doxygen API docs and code-health panel for the darktable reference tree.
 #
 #   Ported from the Ansel project (.github/workflows/docs.yml), so that both codebases
 #   publish documentation and health metrics built with the same configuration, the same
@@ -22,8 +22,9 @@
 
 name: Docs building
 
-# This tree is frozen, so there is no weekly cron here (unlike Ansel's copy): the docs
-# only need rebuilding when the Doxygen configuration or the health tooling changes.
+# This tree tracks a released darktable rather than a moving branch, so there is no
+# weekly cron here (unlike Ansel's copy): the docs only need rebuilding when the
+# version is bumped, or the Doxygen configuration or health tooling changes.
 on:
   push:
     branches:

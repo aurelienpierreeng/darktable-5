@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2010-2024 darktable developers.
+    Copyright (C) 2010-2026 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -15,10 +15,6 @@
     You should have received a copy of the GNU General Public License
     along with darktable.  If not, see <http://www.gnu.org/licenses/>.
 */
-
-#ifdef HAVE_CONFIG_H
-#include "config.h"
-#endif
 
 #include "bauhaus/bauhaus.h"
 #include "common/colorspaces_inline_conversions.h"
@@ -252,24 +248,6 @@ typedef struct dt_iop_basecurve_gui_data_t
   GtkWidget *logbase;
 } dt_iop_basecurve_gui_data_t;
 
-static const char neutral[] = N_("neutral");
-static const char canon_eos[] = N_("canon eos like");
-static const char canon_eos_alt[] = N_("canon eos like alternate");
-static const char nikon[] = N_("nikon like");
-static const char nikon_alt[] = N_("nikon like alternate");
-static const char sony_alpha[] = N_("sony alpha like");
-static const char pentax[] = N_("pentax like");
-static const char ricoh[] = N_("ricoh like");
-static const char olympus[] = N_("olympus like");
-static const char olympus_alt[] = N_("olympus like alternate");
-static const char panasonic[] = N_("panasonic like");
-static const char leica[] = N_("leica like");
-static const char kodak_easyshare[] = N_("kodak easyshare like");
-static const char konica_minolta[] = N_("konica minolta like");
-static const char samsung[] = N_("samsung like");
-static const char fujifilm[] = N_("fujifilm like");
-static const char nokia[] = N_("nokia like");
-
 typedef struct basecurve_preset_t
 {
   const char *name;
@@ -323,24 +301,24 @@ static const int basecurve_camera_presets_cnt = sizeof(basecurve_camera_presets)
 static const basecurve_preset_t basecurve_presets[] = {
   // clang-format off
   // smoother cubic spline curve
-  { N_("cubic spline"), "", "", 0, FLT_MAX, { { { { 0.0, 0.0}, { 1.0, 1.0 }, { 0., 0.}, { 0., 0.}, { 0., 0.}, { 0., 0.}, { 0., 0.}, { 0., 0.} } }, { 2 }, { CUBIC_SPLINE }, 0, 0, 0, DT_RGB_NORM_LUMINANCE }, 0 },
-  { neutral,         "", "",                      0, FLT_MAX, { { { { 0.000000, 0.000000 }, { 0.005000, 0.002500 }, { 0.150000, 0.300000 }, { 0.400000, 0.700000 }, { 0.750000, 0.950000 }, { 1.000000, 1.000000 } } }, { 6 }, { m } , 0, 0, 0, DT_RGB_NORM_LUMINANCE}, 1 },
-  { canon_eos,       "Canon", "",                 0, FLT_MAX, { { { { 0.000000, 0.000000 }, { 0.028226, 0.029677 }, { 0.120968, 0.232258 }, { 0.459677, 0.747581 }, { 0.858871, 0.967742 }, { 1.000000, 1.000000 } } }, { 6 }, { m }, 0, 0, 0, DT_RGB_NORM_LUMINANCE }, 0 },
-  { canon_eos_alt,   "Canon", "EOS 5D Mark%",      0, FLT_MAX, { { { { 0.000000, 0.000000 }, { 0.026210, 0.029677 }, { 0.108871, 0.232258 }, { 0.350806, 0.747581 }, { 0.669355, 0.967742 }, { 1.000000, 1.000000 } } }, { 6 }, { m }, 0, 0, 0, DT_RGB_NORM_LUMINANCE }, 0 },
-  { nikon,           "NIKON", "",                 0, FLT_MAX, { { { { 0.000000, 0.000000 }, { 0.036290, 0.036532 }, { 0.120968, 0.228226 }, { 0.459677, 0.759678 }, { 0.858871, 0.983468 }, { 1.000000, 1.000000 } } }, { 6 }, { m }, 0, 0, 0, DT_RGB_NORM_LUMINANCE }, 0 },
-  { nikon_alt,       "NIKON", "%D____%",            0, FLT_MAX, { { { { 0.000000, 0.000000 }, { 0.012097, 0.007322 }, { 0.072581, 0.130742 }, { 0.310484, 0.729291 }, { 0.611321, 0.951613 }, { 1.000000, 1.000000 } } }, { 6 }, { m }, 0, 0, 0, DT_RGB_NORM_LUMINANCE }, 0 },
-  { sony_alpha,      "SONY", "",                  0, FLT_MAX, { { { { 0.000000, 0.000000 }, { 0.031949, 0.036532 }, { 0.105431, 0.228226 }, { 0.434505, 0.759678 }, { 0.855738, 0.983468 }, { 1.000000, 1.000000 } } }, { 6 }, { m }, 0, 0, 0, DT_RGB_NORM_LUMINANCE }, 0 },
-  { pentax,          "PENTAX", "",                0, FLT_MAX, { { { { 0.000000, 0.000000 }, { 0.032258, 0.024596 }, { 0.120968, 0.166419 }, { 0.205645, 0.328527 }, { 0.604839, 0.790171 }, { 1.000000, 1.000000 } } }, { 6 }, { m }, 0, 0, 0, DT_RGB_NORM_LUMINANCE }, 0 },
-  { ricoh,           "RICOH", "",                 0, FLT_MAX, { { { { 0.000000, 0.000000 }, { 0.032259, 0.024596 }, { 0.120968, 0.166419 }, { 0.205645, 0.328527 }, { 0.604839, 0.790171 }, { 1.000000, 1.000000 } } }, { 6 }, { m }, 0, 0, 0, DT_RGB_NORM_LUMINANCE }, 0 },
-  { olympus,         "OLYMPUS", "",               0, FLT_MAX, { { { { 0.000000, 0.000000 }, { 0.033962, 0.028226 }, { 0.249057, 0.439516 }, { 0.501887, 0.798387 }, { 0.750943, 0.955645 }, { 1.000000, 1.000000 } } }, { 6 }, { m }, 0, 0, 0, DT_RGB_NORM_LUMINANCE }, 0 },
-  { olympus_alt,     "OLYMPUS", "E-M%",            0, FLT_MAX, { { { { 0.000000, 0.000000 }, { 0.012097, 0.010322 }, { 0.072581, 0.167742 }, { 0.310484, 0.711291 }, { 0.645161, 0.956855 }, { 1.000000, 1.000000 } } }, { 6 }, { m }, 0, 0, 0, DT_RGB_NORM_LUMINANCE }, 0 },
-  { panasonic,       "Panasonic", "",             0, FLT_MAX, { { { { 0.000000, 0.000000 }, { 0.036290, 0.024596 }, { 0.120968, 0.166419 }, { 0.205645, 0.328527 }, { 0.604839, 0.790171 }, { 1.000000, 1.000000 } } }, { 6 }, { m }, 0, 0, 0, DT_RGB_NORM_LUMINANCE }, 0 },
-  { leica,           "Leica", "",                 0, FLT_MAX, { { { { 0.000000, 0.000000 }, { 0.036291, 0.024596 }, { 0.120968, 0.166419 }, { 0.205645, 0.328527 }, { 0.604839, 0.790171 }, { 1.000000, 1.000000 } } }, { 6 }, { m }, 0, 0, 0, DT_RGB_NORM_LUMINANCE }, 0 },
-  { kodak_easyshare, "EASTMAN KODAK COMPANY", "", 0, FLT_MAX, { { { { 0.000000, 0.000000 }, { 0.044355, 0.020967 }, { 0.133065, 0.154322 }, { 0.209677, 0.300301 }, { 0.572581, 0.753477 }, { 1.000000, 1.000000 } } }, { 6 }, { m }, 0, 0, 0, DT_RGB_NORM_LUMINANCE }, 0 },
-  { konica_minolta,  "MINOLTA", "",               0, FLT_MAX, { { { { 0.000000, 0.000000 }, { 0.020161, 0.010322 }, { 0.112903, 0.167742 }, { 0.500000, 0.711291 }, { 0.899194, 0.956855 }, { 1.000000, 1.000000 } } }, { 6 }, { m }, 0, 0, 0, DT_RGB_NORM_LUMINANCE }, 0 },
-  { samsung,         "SAMSUNG", "",               0, FLT_MAX, { { { { 0.000000, 0.000000 }, { 0.040323, 0.029677 }, { 0.133065, 0.232258 }, { 0.447581, 0.747581 }, { 0.842742, 0.967742 }, { 1.000000, 1.000000 } } }, { 6 }, { m }, 0, 0, 0, DT_RGB_NORM_LUMINANCE }, 0 },
-  { fujifilm,        "FUJIFILM", "",              0, FLT_MAX, { { { { 0.000000, 0.000000 }, { 0.028226, 0.029677 }, { 0.104839, 0.232258 }, { 0.387097, 0.747581 }, { 0.754032, 0.967742 }, { 1.000000, 1.000000 } } }, { 6 }, { m }, 0, 0, 0, DT_RGB_NORM_LUMINANCE }, 0 },
-  { nokia,           "Nokia", "",                 0, FLT_MAX, { { { { 0.000000, 0.000000 }, { 0.041825, 0.020161 }, { 0.117871, 0.153226 }, { 0.319392, 0.500000 }, { 0.638783, 0.842742 }, { 1.000000, 1.000000 } } }, { 6 }, { m }, 0, 0, 0, DT_RGB_NORM_LUMINANCE }, 0 },
+  { N_("cubic spline"),             "", "",                      0, FLT_MAX, { { { { 0.0, 0.0 }, { 1.0, 1.0 }, { 0.0, 0.0 }, { 0.0, 0.0 }, { 0.0, 0.0 }, { 0.0, 0.0 } , { 0.0, 0.0}, { 0.0, 0.0} } }            , { 2 }, { CUBIC_SPLINE }, 0, 0, 0, DT_RGB_NORM_LUMINANCE }, 0 },
+  { N_("neutral"),                  "", "",                      0, FLT_MAX, { { { { 0.0, 0.0 }, { 0.005000, 0.002500 }, { 0.150000, 0.300000 }, { 0.400000, 0.700000 }, { 0.750000, 0.950000 }, { 1.000000, 1.000000 } } }, { 6 }, { m }, 0, 0, 0, DT_RGB_NORM_LUMINANCE }, 1 },
+  { N_("canon eos like"),           "Canon", "",                 0, FLT_MAX, { { { { 0.0, 0.0 }, { 0.028226, 0.029677 }, { 0.120968, 0.232258 }, { 0.459677, 0.747581 }, { 0.858871, 0.967742 }, { 1.000000, 1.000000 } } }, { 6 }, { m }, 0, 0, 0, DT_RGB_NORM_LUMINANCE }, 0 },
+  { N_("canon eos like alternate"), "Canon", "EOS 5D Mark%",     0, FLT_MAX, { { { { 0.0, 0.0 }, { 0.026210, 0.029677 }, { 0.108871, 0.232258 }, { 0.350806, 0.747581 }, { 0.669355, 0.967742 }, { 1.000000, 1.000000 } } }, { 6 }, { m }, 0, 0, 0, DT_RGB_NORM_LUMINANCE }, 0 },
+  { N_("nikon like"),               "NIKON", "",                 0, FLT_MAX, { { { { 0.0, 0.0 }, { 0.036290, 0.036532 }, { 0.120968, 0.228226 }, { 0.459677, 0.759678 }, { 0.858871, 0.983468 }, { 1.000000, 1.000000 } } }, { 6 }, { m }, 0, 0, 0, DT_RGB_NORM_LUMINANCE }, 0 },
+  { N_("nikon like alternate"),     "NIKON", "%D____%",          0, FLT_MAX, { { { { 0.0, 0.0 }, { 0.012097, 0.007322 }, { 0.072581, 0.130742 }, { 0.310484, 0.729291 }, { 0.611321, 0.951613 }, { 1.000000, 1.000000 } } }, { 6 }, { m }, 0, 0, 0, DT_RGB_NORM_LUMINANCE }, 0 },
+  { N_("sony alpha like"),          "SONY", "",                  0, FLT_MAX, { { { { 0.0, 0.0 }, { 0.031949, 0.036532 }, { 0.105431, 0.228226 }, { 0.434505, 0.759678 }, { 0.855738, 0.983468 }, { 1.000000, 1.000000 } } }, { 6 }, { m }, 0, 0, 0, DT_RGB_NORM_LUMINANCE }, 0 },
+  { N_("pentax like"),              "PENTAX", "",                0, FLT_MAX, { { { { 0.0, 0.0 }, { 0.032258, 0.024596 }, { 0.120968, 0.166419 }, { 0.205645, 0.328527 }, { 0.604839, 0.790171 }, { 1.000000, 1.000000 } } }, { 6 }, { m }, 0, 0, 0, DT_RGB_NORM_LUMINANCE }, 0 },
+  { N_("ricoh like"),               "RICOH", "",                 0, FLT_MAX, { { { { 0.0, 0.0 }, { 0.032259, 0.024596 }, { 0.120968, 0.166419 }, { 0.205645, 0.328527 }, { 0.604839, 0.790171 }, { 1.000000, 1.000000 } } }, { 6 }, { m }, 0, 0, 0, DT_RGB_NORM_LUMINANCE }, 0 },
+  { N_("olympus like"),             "OLYMPUS", "",               0, FLT_MAX, { { { { 0.0, 0.0 }, { 0.033962, 0.028226 }, { 0.249057, 0.439516 }, { 0.501887, 0.798387 }, { 0.750943, 0.955645 }, { 1.000000, 1.000000 } } }, { 6 }, { m }, 0, 0, 0, DT_RGB_NORM_LUMINANCE }, 0 },
+  { N_("olympus like alternate"),   "OLYMPUS", "E-M%",           0, FLT_MAX, { { { { 0.0, 0.0 }, { 0.012097, 0.010322 }, { 0.072581, 0.167742 }, { 0.310484, 0.711291 }, { 0.645161, 0.956855 }, { 1.000000, 1.000000 } } }, { 6 }, { m }, 0, 0, 0, DT_RGB_NORM_LUMINANCE }, 0 },
+  { N_("panasonic like"),           "Panasonic", "",             0, FLT_MAX, { { { { 0.0, 0.0 }, { 0.036290, 0.024596 }, { 0.120968, 0.166419 }, { 0.205645, 0.328527 }, { 0.604839, 0.790171 }, { 1.000000, 1.000000 } } }, { 6 }, { m }, 0, 0, 0, DT_RGB_NORM_LUMINANCE }, 0 },
+  { N_("leica like"),               "Leica", "",                 0, FLT_MAX, { { { { 0.0, 0.0 }, { 0.036291, 0.024596 }, { 0.120968, 0.166419 }, { 0.205645, 0.328527 }, { 0.604839, 0.790171 }, { 1.000000, 1.000000 } } }, { 6 }, { m }, 0, 0, 0, DT_RGB_NORM_LUMINANCE }, 0 },
+  { N_("kodak easyshare like"),     "EASTMAN KODAK COMPANY", "", 0, FLT_MAX, { { { { 0.0, 0.0 }, { 0.044355, 0.020967 }, { 0.133065, 0.154322 }, { 0.209677, 0.300301 }, { 0.572581, 0.753477 }, { 1.000000, 1.000000 } } }, { 6 }, { m }, 0, 0, 0, DT_RGB_NORM_LUMINANCE }, 0 },
+  { N_("konica minolta like"),      "MINOLTA", "",               0, FLT_MAX, { { { { 0.0, 0.0 }, { 0.020161, 0.010322 }, { 0.112903, 0.167742 }, { 0.500000, 0.711291 }, { 0.899194, 0.956855 }, { 1.000000, 1.000000 } } }, { 6 }, { m }, 0, 0, 0, DT_RGB_NORM_LUMINANCE }, 0 },
+  { N_("samsung like"),             "SAMSUNG", "",               0, FLT_MAX, { { { { 0.0, 0.0 }, { 0.040323, 0.029677 }, { 0.133065, 0.232258 }, { 0.447581, 0.747581 }, { 0.842742, 0.967742 }, { 1.000000, 1.000000 } } }, { 6 }, { m }, 0, 0, 0, DT_RGB_NORM_LUMINANCE }, 0 },
+  { N_("fujifilm like"),            "FUJIFILM", "",              0, FLT_MAX, { { { { 0.0, 0.0 }, { 0.028226, 0.029677 }, { 0.104839, 0.232258 }, { 0.387097, 0.747581 }, { 0.754032, 0.967742 }, { 1.000000, 1.000000 } } }, { 6 }, { m }, 0, 0, 0, DT_RGB_NORM_LUMINANCE }, 0 },
+  { N_("nokia like"),               "Nokia", "",                 0, FLT_MAX, { { { { 0.0, 0.0 }, { 0.041825, 0.020161 }, { 0.117871, 0.153226 }, { 0.319392, 0.500000 }, { 0.638783, 0.842742 }, { 1.000000, 1.000000 } } }, { 6 }, { m }, 0, 0, 0, DT_RGB_NORM_LUMINANCE }, 0 },
   // clang-format on
 };
 #undef m
@@ -389,7 +367,7 @@ const char **description(dt_iop_module_t *self)
 {
   return dt_iop_set_description
     (self,
-     _("apply a view transform based on personal or camera manufacturer look,\n"
+     _("apply a view transform based on personal or camera maker look,\n"
        "for corrective purposes, to prepare images for display"),
      _("corrective"),
      _("linear, RGB, display-referred"),
@@ -419,6 +397,9 @@ static void set_presets(dt_iop_module_so_t *self,
                         const int count,
                         const gboolean camera)
 {
+  dt_develop_blend_params_t default_blendop_params;
+  dt_develop_blend_init_blend_parameters(&default_blendop_params, DEVELOP_BLEND_CS_RGB_DISPLAY);
+
   // transform presets above to db entries
   for(int k = 0; k < count; k++)
   {
@@ -430,22 +411,24 @@ static void set_presets(dt_iop_module_so_t *self,
       tmp.exposure_stops = 1.0f;
       tmp.exposure_bias = 1.0f;
     }
+    gchar *prefixed_name = camera ? g_strdup(presets[k].name) : g_strdup_printf(BUILTIN_PREFIX "%s", presets[k].name);
     // add the preset.
-    dt_gui_presets_add_generic(_(presets[k].name), self->op, self->version(),
-                               &tmp, sizeof(dt_iop_basecurve_params_t), 1,
-                               DEVELOP_BLEND_CS_RGB_DISPLAY);
+    dt_gui_presets_add_with_blendop(prefixed_name, self->op, self->version(),
+                                    &tmp, sizeof(dt_iop_basecurve_params_t),
+                                    &default_blendop_params, TRUE);
     // and restrict it to model, maker, iso, and raw images
-    dt_gui_presets_update_mml(_(presets[k].name), self->op, self->version(),
+    dt_gui_presets_update_mml(prefixed_name, self->op, self->version(),
                               presets[k].maker, presets[k].model, "");
-    dt_gui_presets_update_iso(_(presets[k].name), self->op, self->version(),
+    dt_gui_presets_update_iso(prefixed_name, self->op, self->version(),
                               presets[k].iso_min, presets[k].iso_max);
-    dt_gui_presets_update_format(_(presets[k].name), self->op, self->version(), FOR_RAW);
+    dt_gui_presets_update_format(prefixed_name, self->op, self->version(), FOR_RAW);
     // make it auto-apply for matching images:
-    dt_gui_presets_update_autoapply(_(presets[k].name), self->op, self->version(), FALSE);
+    dt_gui_presets_update_autoapply(prefixed_name, self->op, self->version(), FALSE);
     // hide all non-matching presets in case the model string is set.
     // When force_autoapply was given always filter (as these are per-camera presets)
-    dt_gui_presets_update_filter(_(presets[k].name),
+    dt_gui_presets_update_filter(prefixed_name,
                                  self->op, self->version(), camera || presets[k].filter);
+    g_free(prefixed_name);
   }
 }
 
@@ -460,7 +443,7 @@ static gboolean _match(const char *value, const char *pattern)
   {
     if(pat[k] == '%')
       pat[k] = '*';
-    else if (pat[k] == '_')
+    else if(pat[k] == '_')
       pat[k] = '.';
     k++;
   }
@@ -569,12 +552,12 @@ void init_presets(dt_iop_module_so_t *self)
     dt_gui_presets_add_generic
       (_("display-referred default"), self->op, self->version(),
        NULL, 0,
-       1, DEVELOP_BLEND_CS_RGB_DISPLAY);
+       TRUE, DEVELOP_BLEND_CS_RGB_DISPLAY);
 
-    dt_gui_presets_update_format(_("display-referred default"), self->op,
+    dt_gui_presets_update_format(BUILTIN_PRESET("display-referred default"), self->op,
                                  self->version(), FOR_RAW);
 
-    dt_gui_presets_update_autoapply(_("display-referred default"),
+    dt_gui_presets_update_autoapply(BUILTIN_PRESET("display-referred default"),
                                     self->op, self->version(), TRUE);
   }
 }
@@ -751,7 +734,7 @@ int process_cl_fusion(dt_iop_module_t *self,
     }
   }
 
-  dev_m = dt_opencl_copy_host_to_device(devid, d->table, 256, 256, sizeof(float));
+  dev_m = dt_opencl_copy_host_to_image(devid, d->table, 256, 256, sizeof(float));
   if(dev_m == NULL) goto error;
 
   dev_coeffs = dt_opencl_copy_host_to_device_constant(devid, sizeof(float) * 3, d->unbounded_coeffs);
@@ -764,25 +747,20 @@ int process_cl_fusion(dt_iop_module_t *self,
     {
       const float mul = exposure_increment(d->exposure_stops, e, d->exposure_fusion, d->exposure_bias);
 
-      size_t sizes[] = { ROUNDUPDWD(width, devid), ROUNDUPDHT(height, devid), 1 };
       if(d->preserve_colors == DT_RGB_NORM_NONE)
-      {
-        dt_opencl_set_kernel_args(devid, gd->kernel_basecurve_legacy_lut, 0, CLARG(dev_in), CLARG(dev_tmp1),
+        err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_basecurve_legacy_lut, width, height,
+          CLARG(dev_in), CLARG(dev_tmp1),
           CLARG(width), CLARG(height), CLARG(mul), CLARG(dev_m), CLARG(dev_coeffs));
-        err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_basecurve_legacy_lut, sizes);
-        if(err != CL_SUCCESS) goto error;
-      }
       else
-      {
-        dt_opencl_set_kernel_args(devid, gd->kernel_basecurve_lut, 0, CLARG(dev_in), CLARG(dev_tmp1), CLARG(width),
+        err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_basecurve_lut, width, height,
+          CLARG(dev_in), CLARG(dev_tmp1), CLARG(width),
           CLARG(height), CLARG(mul), CLARG(dev_m), CLARG(dev_coeffs), CLARG(preserve_colors), CLARG(dev_profile_info),
           CLARG(dev_profile_lut), CLARG(use_work_profile));
-        err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_basecurve_lut, sizes);
-      }
+      if(err != CL_SUCCESS) goto error;
 
-      dt_opencl_set_kernel_args(devid, gd->kernel_basecurve_compute_features, 0, CLARG(dev_tmp1), CLARG(dev_col[0]),
+      err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_basecurve_compute_features, width, height,
+        CLARG(dev_tmp1), CLARG(dev_col[0]),
         CLARG(width), CLARG(height));
-      err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_basecurve_compute_features, sizes);
       if(err != CL_SUCCESS) goto error;
     }
 
@@ -796,9 +774,8 @@ int process_cl_fusion(dt_iop_module_t *self,
         CLARG(dev_col[0]), CLARG(dev_out), CLARG(dev_tmp1), CLARG(width), CLARG(height));
       if(err != CL_SUCCESS) goto error;
 
-      size_t origin[] = { 0, 0, 0 };
-      size_t region[] = { width, height, 1 };
-      err = dt_opencl_enqueue_copy_image(devid, dev_tmp1, dev_col[0], origin, origin, region);
+      const size_t region[2] = { width, height };
+      err = dt_opencl_enqueue_copy_image(devid, dev_tmp1, dev_col[0], CLIMG_ORIGIN, CLIMG_ORIGIN, region);
       if(err != CL_SUCCESS) goto error;
     }
 
@@ -830,29 +807,19 @@ int process_cl_fusion(dt_iop_module_t *self,
 
       // blend images into output pyramid
       if(k == num_levels - 1)
-      {
         // blend gaussian base
         err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_basecurve_blend_gaussian, w, h,
           CLARG(dev_comb[k]), CLARG(dev_col[k]), CLARG(dev_tmp1), CLARG(w), CLARG(h));
-        if(err != CL_SUCCESS) goto error;
-
-        size_t origin[] = { 0, 0, 0 };
-        size_t region[] = { w, h, 1 };
-        err = dt_opencl_enqueue_copy_image(devid, dev_tmp1, dev_comb[k], origin, origin, region);
-        if(err != CL_SUCCESS) goto error;
-      }
       else
-      {
         // blend laplacian
         err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_basecurve_blend_laplacian, w, h,
           CLARG(dev_comb[k]), CLARG(dev_col[k]), CLARG(dev_tmp2), CLARG(dev_tmp1), CLARG(w), CLARG(h));
-        if(err != CL_SUCCESS) goto error;
 
-        size_t origin[] = { 0, 0, 0 };
-        size_t region[] = { w, h, 1 };
-        err = dt_opencl_enqueue_copy_image(devid, dev_tmp1, dev_comb[k], origin, origin, region);
-        if(err != CL_SUCCESS) goto error;
-      }
+      if(err != CL_SUCCESS) goto error;
+
+      const size_t region[2] = { w, h };
+      err = dt_opencl_enqueue_copy_image(devid, dev_tmp1, dev_comb[k], CLIMG_ORIGIN, CLIMG_ORIGIN, region);
+      if(err != CL_SUCCESS) goto error;
     }
   }
 
@@ -875,9 +842,8 @@ int process_cl_fusion(dt_iop_module_t *self,
       if(err != CL_SUCCESS) goto error;
 
       // dev_tmp1[k] -> dev_comb[k]
-      size_t origin[] = { 0, 0, 0 };
-      size_t region[] = { w, h, 1 };
-      err = dt_opencl_enqueue_copy_image(devid, dev_tmp1, dev_comb[k], origin, origin, region);
+      const size_t region[2] = { w, h };
+      err = dt_opencl_enqueue_copy_image(devid, dev_tmp1, dev_comb[k], CLIMG_ORIGIN, CLIMG_ORIGIN, region);
       if(err != CL_SUCCESS) goto error;
     }
 
@@ -895,9 +861,8 @@ int process_cl_fusion(dt_iop_module_t *self,
       if(err != CL_SUCCESS) goto error;
 
       // dev_tmp2 -> dev_comb[k]
-      size_t origin[] = { 0, 0, 0 };
-      size_t region[] = { w, h, 1 };
-      err = dt_opencl_enqueue_copy_image(devid, dev_tmp2, dev_comb[k], origin, origin, region);
+      const size_t region[2] = { w, h };
+      err = dt_opencl_enqueue_copy_image(devid, dev_tmp2, dev_comb[k], CLIMG_ORIGIN, CLIMG_ORIGIN, region);
       if(err != CL_SUCCESS) goto error;
     }
   }
@@ -937,7 +902,7 @@ int process_cl_lut(dt_iop_module_t *self,
 
   cl_mem dev_m = NULL;
   cl_mem dev_coeffs = NULL;
-  cl_int err = DT_OPENCL_DEFAULT_ERROR;
+  cl_int err = CL_MEM_OBJECT_ALLOCATION_FAILURE;
 
   cl_mem dev_profile_info = NULL;
   cl_mem dev_profile_lut = NULL;
@@ -950,36 +915,26 @@ int process_cl_lut(dt_iop_module_t *self,
   const int height = roi_in->height;
   const int preserve_colors = d->preserve_colors;
 
-  const float mul = 1.0f;
-
-  size_t sizes[] = { ROUNDUPDWD(width, devid), ROUNDUPDHT(height, devid), 1 };
-  dev_m = dt_opencl_copy_host_to_device(devid, d->table, 256, 256, sizeof(float));
-  if(dev_m == NULL) goto error;
+  dev_m = dt_opencl_copy_host_to_image(devid, d->table, 256, 256, sizeof(float));
+  dev_coeffs = dt_opencl_copy_host_to_device_constant(devid, sizeof(float) * 3, d->unbounded_coeffs);
+  if(!dev_m || !dev_coeffs) goto error;
 
   err = dt_ioppr_build_iccprofile_params_cl(work_profile, devid, &profile_info_cl, &profile_lut_cl,
                                             &dev_profile_info, &dev_profile_lut);
   if(err != CL_SUCCESS) goto error;
 
-  dev_coeffs = dt_opencl_copy_host_to_device_constant(devid, sizeof(float) * 3, d->unbounded_coeffs);
-
-  if(dev_coeffs == NULL) goto error;
-
   // read data/kernels/basecurve.cl for a description of "legacy" vs current
   // Conditional is moved outside of the OpenCL operations for performance.
   if(d->preserve_colors == DT_RGB_NORM_NONE)
-  {
-    dt_opencl_set_kernel_args(devid, gd->kernel_basecurve_legacy_lut, 0, CLARG(dev_in), CLARG(dev_out),
-      CLARG(width), CLARG(height), CLARG(mul), CLARG(dev_m), CLARG(dev_coeffs));
-    err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_basecurve_legacy_lut, sizes);
-  }
+    err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_basecurve_legacy_lut, width, height,
+          CLARG(dev_in), CLARG(dev_out),
+          CLARG(width), CLARG(height), CLARGFLOAT(1.0f), CLARG(dev_m), CLARG(dev_coeffs));
   else
-  {
-    //FIXME:  There are still conditionals on d->preserve_colors within this flow that could impact performance
-    dt_opencl_set_kernel_args(devid, gd->kernel_basecurve_lut, 0, CLARG(dev_in), CLARG(dev_out), CLARG(width),
-      CLARG(height), CLARG(mul), CLARG(dev_m), CLARG(dev_coeffs), CLARG(preserve_colors), CLARG(dev_profile_info),
+    err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_basecurve_lut, width, height,
+      CLARG(dev_in), CLARG(dev_out),
+      CLARG(width), CLARG(height),
+      CLARGFLOAT(1.0f), CLARG(dev_m), CLARG(dev_coeffs), CLARG(preserve_colors), CLARG(dev_profile_info),
       CLARG(dev_profile_lut), CLARG(use_work_profile));
-    err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_basecurve_lut, sizes);
-  }
 
 error:
   dt_opencl_release_mem_object(dev_m);
@@ -1012,24 +967,19 @@ void tiling_callback(dt_iop_module_t *self,
 {
   dt_iop_basecurve_data_t *const d = piece->data;
 
+  tiling->maxbuf = 1.0f;
+  tiling->overhead = 0;
+  tiling->align = 1;
+
   if(d->exposure_fusion)
   {
     const int rad = MIN(roi_in->width, (int)ceilf(256 * roi_in->scale / piece->iscale));
-
     tiling->factor = 6.666f;                 // in + out + col[] + comb[] + 2*tmp
-    tiling->maxbuf = 1.0f;
-    tiling->overhead = 0;
-    tiling->xalign = 1;
-    tiling->yalign = 1;
     tiling->overlap = rad;
   }
   else
   {
     tiling->factor = 2.0f;                   // in + out
-    tiling->maxbuf = 1.0f;
-    tiling->overhead = 0;
-    tiling->xalign = 1;
-    tiling->yalign = 1;
     tiling->overlap = 0;
   }
 }
@@ -1909,7 +1859,7 @@ static gboolean dt_iop_basecurve_button_press(GtkWidget *widget,
   int nodes = p->basecurve_nodes[ch];
   dt_iop_basecurve_node_t *basecurve = p->basecurve[ch];
 
-  if(event->button == 1)
+  if(event->button == GDK_BUTTON_PRIMARY)
   {
     if(event->type == GDK_BUTTON_PRESS && dt_modifier_is(event->state, GDK_CONTROL_MASK)
       && nodes < MAXNODES && g->selected == -1)
@@ -1986,7 +1936,7 @@ static gboolean dt_iop_basecurve_button_press(GtkWidget *widget,
       return TRUE;
     }
   }
-  else if(event->button == 3 && g->selected >= 0)
+  else if(event->button == GDK_BUTTON_SECONDARY && g->selected >= 0)
   {
     if(g->selected == 0 || g->selected == nodes - 1)
     {
@@ -2138,13 +2088,12 @@ void gui_init(dt_iop_module_t *self)
   g->selected = -1;
   g->loglogscale = 0;
 
-  self->widget = gtk_box_new(GTK_ORIENTATION_VERTICAL, DT_BAUHAUS_SPACE);
-
   g->area = GTK_DRAWING_AREA(dtgtk_drawing_area_new_with_height(0));
   gtk_widget_set_tooltip_text(GTK_WIDGET(g->area), _("abscissa: input, ordinate: output. works on RGB channels"));
   g_object_set_data(G_OBJECT(g->area), "iop-instance", self);
   dt_action_define_iop(self, NULL, N_("curve"), GTK_WIDGET(g->area), NULL);
-  gtk_box_pack_start(GTK_BOX(self->widget), GTK_WIDGET(g->area), TRUE, TRUE, 0);
+
+  self->widget = dt_gui_vbox(g->area);
 
   g->cmb_preserve_colors = dt_bauhaus_combobox_from_params(self, "preserve_colors");
   gtk_widget_set_tooltip_text(g->cmb_preserve_colors, _("method to preserve colors when applying contrast"));
@@ -2171,9 +2120,11 @@ void gui_init(dt_iop_module_t *self)
                                                   "(-1: reduce highlight, +1: reduce shadows)"));
   gtk_widget_set_no_show_all(g->exposure_bias, TRUE);
   gtk_widget_set_visible(g->exposure_bias, p->exposure_fusion != 0 ? TRUE : FALSE);
+
   g->logbase = dt_bauhaus_slider_new_with_range(self, 0.0f, 40.0f, 0, 0.0f, 2);
   dt_bauhaus_widget_set_label(g->logbase, NULL, N_("scale for graph"));
-  gtk_box_pack_start(GTK_BOX(self->widget), g->logbase , TRUE, TRUE, 0);  g_signal_connect(G_OBJECT(g->logbase), "value-changed", G_CALLBACK(logbase_callback), self);
+  g_signal_connect(G_OBJECT(g->logbase), "value-changed", G_CALLBACK(logbase_callback), self);
+  dt_gui_box_add(self->widget, g->logbase);
 
   gtk_widget_add_events(GTK_WIDGET(g->area), GDK_POINTER_MOTION_MASK | darktable.gui->scroll_mask
                                            | GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK
@@ -2191,8 +2142,6 @@ void gui_cleanup(dt_iop_module_t *self)
 {
   dt_iop_basecurve_gui_data_t *g = self->gui_data;
   dt_draw_curve_destroy(g->minmax_curve);
-
-  IOP_GUI_FREE;
 }
 
 // clang-format off

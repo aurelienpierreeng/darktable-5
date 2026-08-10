@@ -24,6 +24,8 @@ void dt_color_harmony_init(dt_color_harmony_guide_t *layout)
   layout->type = DT_COLOR_HARMONY_NONE;
   layout->rotation = 0;
   layout->width = DT_COLOR_HARMONY_WIDTH_NORMAL;
+  layout->custom_n = 0;
+  memset(layout->custom_angles, 0, sizeof(layout->custom_angles));
 }
 
 void dt_color_harmony_set(const dt_imgid_t imgid,
@@ -58,31 +60,7 @@ void dt_color_harmony_set(const dt_imgid_t imgid,
   sqlite3_step(stmt);
   sqlite3_finalize(stmt);
 
-  // If inserted the proper link with the image table is done
-  // by the color_harmony_insert trigger.
-}
-
-dt_harmony_guide_id_t dt_color_harmony_get_id(const dt_imgid_t imgid)
-{
-  dt_harmony_guide_id_t id = -1;
-
-  sqlite3_stmt *stmt = NULL;
-
-  DT_DEBUG_SQLITE3_PREPARE_V2
-    (dt_database_get(darktable.db),
-     "SELECT imgid"
-     " FROM main.harmony_guide"
-     " WHERE imgid = ?1",
-     -1, &stmt, NULL);
-
-  DT_DEBUG_SQLITE3_BIND_INT(stmt, 1, imgid);
-
-  if(sqlite3_step(stmt) == SQLITE_ROW)
-  {
-    id = sqlite3_column_int(stmt, 0);
-  }
-
-  return id;
+  // On insert, the link with the image table is maintained by the color_harmony_insert trigger.
 }
 
 gboolean dt_color_harmony_get(const dt_imgid_t imgid,
@@ -104,6 +82,9 @@ gboolean dt_color_harmony_get(const dt_imgid_t imgid,
     layout->type = sqlite3_column_int(stmt, 0);
     layout->rotation = sqlite3_column_int(stmt, 1);
     layout->width = sqlite3_column_int(stmt, 2);
+    // Custom angles are not persisted — they are set live by the IOP module.
+    layout->custom_n = 0;
+    memset(layout->custom_angles, 0, sizeof(layout->custom_angles));
     return TRUE;
   }
   else

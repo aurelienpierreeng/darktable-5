@@ -112,9 +112,9 @@ uint32_t container(dt_lib_module_t *self)
   return DT_UI_CONTAINER_PANEL_BOTTOM;
 }
 
-int expandable(dt_lib_module_t *self)
+gboolean expandable(dt_lib_module_t *self)
 {
-  return 0;
+  return FALSE;
 }
 
 int position(const dt_lib_module_t *self)
@@ -666,9 +666,9 @@ static int _block_get_at_zoom(dt_lib_module_t *self, int width)
   gchar *query = g_strdup_printf("SELECT db.datetime_taken AS dt,"
                                  " col.imgid FROM main.images AS db "
                                  "LEFT JOIN memory.collected_images AS col ON db.id=col.imgid "
-                                 "WHERE dt > %ld "
+                                 "WHERE dt > %lld "
                                  "ORDER BY dt ASC",
-                                 (long int)_time_format_for_db(strip->time_pos, strip->zoom));
+                                 (long long)_time_format_for_db(strip->time_pos, strip->zoom));
   // clang-format on
   DT_DEBUG_SQLITE3_PREPARE_V2(dt_database_get(darktable.db), query, -1, &stmt, NULL);
 
@@ -917,13 +917,9 @@ static gboolean _lib_timeline_draw_callback(GtkWidget *widget, cairo_t *wcr, dt_
   // windows could have been expanded for example, we need to create a new surface of the good size and redraw
   if(width != strip->panel_width || height != strip->panel_height)
   {
-    // if it's the first show, we need to recompute the scroll too
-    if(strip->panel_width == 0 || strip->panel_height == 0)
-    {
-      strip->panel_width = width;
-      strip->panel_height = height;
-      strip->time_pos = _selection_scroll_to(strip->start_t, strip);
-    }
+    strip->panel_width = width;
+    strip->panel_height = height;
+    strip->time_pos = _selection_scroll_to(strip->start_t, strip);
     if(strip->surface)
     {
       cairo_surface_destroy(strip->surface);
@@ -1080,7 +1076,7 @@ static gboolean _lib_timeline_button_press_callback(GtkWidget *w, GdkEventButton
 {
   dt_lib_timeline_t *strip = self->data;
 
-  if(e->button == 1)
+  if(e->button == GDK_BUTTON_PRIMARY)
   {
     if(e->type == GDK_BUTTON_PRESS)
     {
@@ -1113,7 +1109,7 @@ static gboolean _lib_timeline_button_press_callback(GtkWidget *w, GdkEventButton
       gtk_widget_queue_draw(strip->timeline);
     }
   }
-  else if(e->button == 3)
+  else if(e->button == GDK_BUTTON_SECONDARY)
   {
     // we remove the last rule if it's a datetime one
     const int nb_rules = dt_conf_get_int("plugins/lighttable/collect/num_rules");
@@ -1285,22 +1281,22 @@ static gboolean _lib_timeline_motion_notify_callback(GtkWidget *w, GdkEventMotio
   {
     strip->stop_x = e->x;
     strip->stop_t = _time_get_from_pos(e->x, strip);
-    dt_control_change_cursor(GDK_LEFT_PTR);
+    dt_control_change_cursor("default");
   }
   else
   {
     // we change the cursor if we are close enough of a selection limit
     if(e->x - strip->start_x < 2 && e->x - strip->start_x > -2)
     {
-      dt_control_change_cursor(GDK_LEFT_SIDE);
+      dt_control_change_cursor("w-resize");
     }
     else if(e->x - strip->stop_x < 2 && e->x - strip->stop_x > -2)
     {
-      dt_control_change_cursor(GDK_RIGHT_SIDE);
+      dt_control_change_cursor("e-resize");
     }
     else
     {
-      dt_control_change_cursor(GDK_LEFT_PTR);
+      dt_control_change_cursor("default");
     }
   }
   gtk_widget_queue_draw(strip->timeline);
@@ -1420,7 +1416,7 @@ void gui_init(dt_lib_module_t *self)
   /* initialize view manager proxy */
   darktable.view_manager->proxy.timeline.module = self;
 
-  DT_CONTROL_SIGNAL_CONNECT(DT_SIGNAL_COLLECTION_CHANGED, _lib_timeline_collection_changed, self);
+  DT_CONTROL_SIGNAL_HANDLE(DT_SIGNAL_COLLECTION_CHANGED, _lib_timeline_collection_changed);
 
   dt_action_register(DT_ACTION(self), N_("start selection"), _selection_start, GDK_KEY_bracketleft, 0);
   dt_action_register(DT_ACTION(self), N_("stop selection"), _selection_stop, GDK_KEY_bracketright, 0);
@@ -1431,7 +1427,6 @@ void gui_cleanup(dt_lib_module_t *self)
   /* cleanup */
   dt_lib_timeline_t *strip = self->data;
   if(strip->blocks) g_list_free_full(strip->blocks, _block_free);
-  DT_CONTROL_SIGNAL_DISCONNECT(_lib_timeline_collection_changed, self);
   /* unset viewmanager proxy */
   darktable.view_manager->proxy.timeline.module = NULL;
   free(self->data);

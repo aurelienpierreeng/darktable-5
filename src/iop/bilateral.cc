@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2010-2024 darktable developers.
+    Copyright (C) 2010-2025 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -18,9 +18,6 @@
 
 #define __STDC_FORMAT_MACROS
 
-#ifdef HAVE_CONFIG_H
-#include "config.h"
-#endif
 #include "bauhaus/bauhaus.h"
 #include "common/imagebuf.h"
 #include "control/control.h"
@@ -40,7 +37,7 @@
 #include <gtk/gtk.h>
 #include <inttypes.h>
 
-extern "C" {
+G_BEGIN_DECLS
 
 /**
  * implementation of the 5d-color bilateral filter using andrew adams
@@ -100,7 +97,9 @@ dt_iop_colorspace_type_t default_colorspace(dt_iop_module_t *self,
 const char **description(dt_iop_module_t *self)
 {
   return dt_iop_set_description
-    (self, _("apply edge-aware surface blur to denoise or smoothen textures"),
+    (self,
+     _("apply edge-aware surface blur\n"
+       "to denoise or smoothen textures"),
      _("corrective and creative"),
      _("linear, RGB, scene-referred"),
      _("linear, RGB"),
@@ -167,7 +166,7 @@ void process(dt_iop_module_t *self,
   // if rad <= 6 use naive version!
   const int prad = (int)(3.0f * fmaxf(sigma[0], sigma[1]) + 1.0f);
   const int rad = MIN(prad, MIN(roi_out->width, roi_out->height) - 2 * prad);
-  const gboolean thumb = piece->pipe->type & DT_DEV_PIXELPIPE_THUMBNAIL;
+  const gboolean thumb = dt_pipe_is_thumb(piece->pipe);
   if(rad < 1 || (rad <= MAX_DIRECT_STAMP_RADIUS && thumb))
   {
     // no use denoising the thumbnail. takes ages without permutohedral
@@ -357,8 +356,7 @@ void tiling_callback(dt_iop_module_t *self,
   }
   tiling->overhead = 0;
   tiling->overlap = rad;
-  tiling->xalign = 1;
-  tiling->yalign = 1;
+  tiling->align = 1;
   tiling->maxbuf = 1.0f;
 }
 
@@ -386,7 +384,8 @@ void gui_init(dt_iop_module_t *self)
   dt_bauhaus_slider_set_digits(g->blue, 4);
 }
 
-} // extern "C"
+G_END_DECLS
+
 // clang-format off
 // modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
 // vim: shiftwidth=2 expandtab tabstop=2 cindent

@@ -32,20 +32,20 @@ kth_smallest(elem_type a[], int n, int k)
   elem_type x ;
 
   l=0 ; m=n-1 ;
-  while (l<m) {
+  while(l<m) {
     x=a[2*k+1] ;
     i=l ;
     j=m ;
     do {
-      while (a[2*i+1]<x) i++ ;
-      while (x<a[2*j+1]) j-- ;
-      if (i<=j) {
+      while(a[2*i+1]<x) i++ ;
+      while(x<a[2*j+1]) j-- ;
+      if(i<=j) {
         ELEM_SWAP(a[2*i+1],a[2*j+1]) ;
         i++ ; j-- ;
       }
-    } while (i<=j) ;
-    if (j<k) l=i ;
-    if (k<i) m=j ;
+    } while(i<=j) ;
+    if(j<k) l=i ;
+    if(k<i) m=j ;
   }
   return a[2*k+1] ;
 }
@@ -59,11 +59,11 @@ read_pfm(const char *filename, int *wd, int*ht)
 {
   FILE *f = fopen(filename, "rb");
   if(!f) return 0;
-  (void) fscanf(f, "PF\n%d %d\n%*[^\n]", wd, ht);
+  if(fscanf(f, "PF\n%d %d\n%*[^\n]", wd, ht) < 2) return NULL;
   fgetc(f); // eat only one newline
 
   float *p = (float *)malloc(sizeof(float)*3*(*wd)*(*ht));
-  (void) fread(p, sizeof(float)*3, (*wd)*(*ht), f);
+  if(fread(p, sizeof(float)*3, (*wd)*(*ht), f) == 0) { free(p); return NULL; }
   for(int k=0;k<3*(*wd)*(*ht);k++) p[k] = fmaxf(0.0f, p[k]);
   fclose(f);
   return p;
@@ -78,7 +78,7 @@ read_histogram(const char *filename, int *bins)
 
   while(!feof(f))
   {
-    (void) fscanf(f, "%*f %*f %*f %*f %*f %*f %*f %*f %*f %*f\n");
+    if(fscanf(f, "%*f %*f %*f %*f %*f %*f %*f %*f %*f %*f\n") < 0) break;
     (*bins) ++;
   }
   fseek(f, 0, SEEK_SET);
@@ -87,7 +87,7 @@ read_histogram(const char *filename, int *bins)
   int k=0;
   while(!feof(f))
   {
-    (void) fscanf(f, "%*f %*f %*f %*f %*f %*f %*f %f %f %f\n", hist + 3*k, hist+3*k+1, hist+3*k+2);
+    if(fscanf(f, "%*f %*f %*f %*f %*f %*f %*f %f %f %f\n", hist + 3*k, hist+3*k+1, hist+3*k+2) < 3) break;
     k++;
   }
 
@@ -120,21 +120,12 @@ invert_histogram(
   }
 }
 
-#if 0
-static void
-write_pfm(const char *filename, float *buf, int wd, int ht)
-{
-  FILE *f = fopen(filename, "wb");
-  if(!f) return;
-  fprintf(f, "PF\n%d %d\n-1.0\n", wd, ht);
-  fwrite(buf, sizeof(float)*3, wd*ht, f);
-  fclose(f);
-}
-#endif
-
-
+#ifndef MIN
 #define MIN(a,b) ((a>b)?b:a)
+#endif
+#ifndef MAX
 #define MAX(a,b) ((a>b)?a:b)
+#endif
 
 #define N 300
 
@@ -158,6 +149,7 @@ int main(int argc, char *arg[])
   }
   int wd, ht;
   float *input = read_pfm(arg[1], &wd, &ht);
+  if(!input) { fprintf(stderr, "error: could not read input file '%s'\n", arg[1]); return 1;}
   float max = 0.0f;
   // sanity checks:
   // for(int k=0;k<3*wd*ht;k++) input[k] = clamp(input[k], 0.0f, 1.0f);

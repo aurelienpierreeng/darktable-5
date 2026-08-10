@@ -137,7 +137,7 @@ static inline void _blendif_lch(const float *const restrict pixels,
                                 const float *const restrict parameters,
                                 const unsigned int *const restrict invert_mask)
 {
-  const float c_scale = 1.0f / (128.0f * sqrtf(2.0f));
+  const float c_scale = 1.0f / (128.0f * M_SQRT2_F);
   for(size_t x = 0, j = 0; x < stride; x++, j += DT_BLENDIF_LAB_CH)
   {
     dt_aligned_pixel_t LCH;
@@ -609,7 +609,7 @@ _BLEND_FUNC _blend_difference2(const float *const a,
 
     for_each_channel(x)
       tb[x] = fabsf(ta[x] - tb[x]) / fabsf(max[x] - min[x]);
-    tb[0] = fmaxf(tb[0], fmaxf(tb[1], tb[2]));
+    tb[0] = max3f(tb);
 
     tb[0] = _CLAMP(ta[0] * (1.0f - local_opacity) + tb[0] * local_opacity, min[0], max[0]);
     tb[1] = 0.0f;
@@ -1347,7 +1347,7 @@ static void _display_channel(const float *const restrict a,
     }
     case DT_DEV_PIXELPIPE_DISPLAY_LCH_C:
     {
-      const float factor = 1.0f / (128.0f * sqrtf(2.0f) * exp2f(boost_factors[DEVELOP_BLENDIF_C_in]));
+      const float factor = 1.0f / (128.0f * M_SQRT2_F * exp2f(boost_factors[DEVELOP_BLENDIF_C_in]));
       for(size_t i = 0, j = 0; i < stride; i++, j += DT_BLENDIF_LAB_CH)
       {
         dt_aligned_pixel_t LCH;
@@ -1359,7 +1359,7 @@ static void _display_channel(const float *const restrict a,
     }
     case (DT_DEV_PIXELPIPE_DISPLAY_LCH_C | DT_DEV_PIXELPIPE_DISPLAY_OUTPUT):
     {
-      const float factor = 1.0f / (128.0f * sqrtf(2.0f) * exp2f(boost_factors[DEVELOP_BLENDIF_C_out]));
+      const float factor = 1.0f / (128.0f * M_SQRT2_F * exp2f(boost_factors[DEVELOP_BLENDIF_C_out]));
       for(size_t i = 0, j = 0; i < stride; i++, j += DT_BLENDIF_LAB_CH)
       {
         dt_aligned_pixel_t LCH;

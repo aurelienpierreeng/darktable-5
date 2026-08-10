@@ -25,10 +25,18 @@
 #include <gtk/gtk.h>
 #ifdef GDK_WINDOWING_QUARTZ
 #include <gdk/gdkquartz.h>
+#if __has_include(<gdk/quartz/gdkquartz-cocoa-access.h>)
+  // GTK 3.24.29+ moved Cocoa-specific declarations to a separate header
+  extern "C" {
+  #include <gdk/quartz/gdkquartz-cocoa-access.h>
+  }
+#endif
 #endif
 #include <gio/gio.h>
 #include <glib.h>
 #include <string.h>
+#include <string>
+#include <vector>
 #ifdef MAC_INTEGRATION
 #include <gtkosxapplication.h>
 #endif
@@ -39,6 +47,10 @@
 #include "osx.h"
 #include "libintl.h"
 
+extern "C" int apple_main(int argc, char *argv[]);
+
+int o_argc;     // original argc
+char **o_argv;  // original argv
 
 float dt_osx_get_ppd()
 {
@@ -56,7 +68,6 @@ float dt_osx_get_ppd()
   }
 }
 
-#if !GTK_CHECK_VERSION(3, 24, 14)
 static void dt_osx_disable_fullscreen(GtkWidget *widget)
 {
 #ifdef GDK_WINDOWING_QUARTZ
@@ -66,22 +77,21 @@ static void dt_osx_disable_fullscreen(GtkWidget *widget)
     if(window)
     {
       NSWindow *native = gdk_quartz_window_get_nswindow(window);
-      [native setCollectionBehavior: ([native collectionBehavior] & ~NSWindowCollectionBehaviorFullScreenPrimary) | NSWindowCollectionBehaviorFullScreenAuxiliary];
+      [native setCollectionBehavior: ([native collectionBehavior] & ~NSWindowCollectionBehaviorFullScreenPrimary)
+                                     | NSWindowCollectionBehaviorFullScreenAuxiliary
+                                     | NSWindowCollectionBehaviorFullScreenDisallowsTiling];
     }
   }
 #endif
 }
-#endif
 
 void dt_osx_disallow_fullscreen(GtkWidget *widget)
 {
-#if !GTK_CHECK_VERSION(3, 24, 14)
 #ifdef GDK_WINDOWING_QUARTZ
   if(gtk_widget_get_realized(widget))
     dt_osx_disable_fullscreen(widget);
   else
     g_signal_connect(G_OBJECT(widget), "realize", G_CALLBACK(dt_osx_disable_fullscreen), NULL);
-#endif
 #endif
 }
 
@@ -94,14 +104,14 @@ gboolean dt_osx_file_trash(const char *filename, GError **error)
 
     NSURL *url = [NSURL fileURLWithPath:@(filename)];
 
-    if ([fm respondsToSelector:@selector(trashItemAtURL:resultingItemURL:error:)]) {
-      if (![fm trashItemAtURL:url resultingItemURL:nil error:&err]) {
-        if (error != NULL)
+    if([fm respondsToSelector:@selector(trashItemAtURL:resultingItemURL:error:)]) {
+      if(![fm trashItemAtURL:url resultingItemURL:nil error:&err]) {
+        if(error != NULL)
           *error = g_error_new_literal(G_IO_ERROR, err.code == NSFileNoSuchFileError ? G_IO_ERROR_NOT_FOUND : G_IO_ERROR_FAILED, err.localizedDescription.UTF8String);
         return FALSE;
       }
     } else {
-      if (error != NULL)
+      if(error != NULL)
         *error = g_error_new_literal(G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED, "trash not supported on OS X versions < 10.8");
       return FALSE;
     }
@@ -287,6 +297,95 @@ void dt_osx_focus_window()
 gboolean dt_osx_open_url(const char *url)
 {
   return [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:@(url)]];
+}
+
+@interface AppDelegate : NSObject <NSApplicationDelegate>
+@end
+
+@implementation AppDelegate 
+{
+    std::vector<std::string> openedFiles;
+}
+
+- (BOOL)application:(NSApplication *)theApplication openFile:(NSString *)filename 
+{
+    openedFiles.push_back(std::string((const char*)[filename UTF8String]));
+    return YES;
+}
+
+- (void)applicationDidFinishLaunching:(NSNotification *)aNotification 
+{
+    // Copy argc and argv from original
+    int argc = o_argc;
+    for(size_t i = 0; i < openedFiles.size(); ++i) 
+    {
+        bool duplicate = false;
+        for(int j = 0; j < o_argc; ++j) 
+        {
+            if(strcmp(openedFiles[i].c_str(), o_argv[j]) == 0) 
+            {
+                duplicate = true;
+                break;
+            }
+        }
+        if(!duplicate) 
+        {
+            argc++;
+        }
+    }
+    char** argv = new char*[argc + 1]; // +1 for the NULL terminator
+
+    // Copy the original params to argv
+    for(int i = 0; i < o_argc; ++i) 
+    {
+        argv[i] = strdup(o_argv[i]);
+    }
+
+    // Append openedFiles to argv if they are not duplicates
+    int index = o_argc;
+    for(size_t i = 0; i < openedFiles.size(); ++i) 
+    {
+        bool duplicate = false;
+        for(int j = 0; j < o_argc; ++j) 
+        {
+            if(!strcmp(openedFiles[i].c_str(), o_argv[j])) 
+            {
+                duplicate = true;
+                break;
+            }
+        }
+        if(!duplicate) 
+        {
+            argv[index++] = strdup(openedFiles[i].c_str());
+        }
+    }
+    argv[argc] = NULL; // NULL terminator for argv
+
+    // Call main (renamed apple_main()) with the constructed argc and argv
+    apple_main(argc, argv);
+
+    // Clean up
+    for(int i = 0; i < argc; ++i) 
+    {
+        free(argv[i]);
+    }
+    delete[] argv;
+}
+
+@end
+
+int main(int argc, const char * argv[]) 
+{
+    @autoreleasepool 
+    {
+        o_argc = argc;
+        o_argv = (char**)argv;
+        NSApplication *app = [NSApplication sharedApplication];
+        AppDelegate *delegate = [[AppDelegate alloc] init];
+        [app setDelegate:delegate];
+        [app run];
+    }
+    return 0;
 }
 
 // modelines: These editor modelines have been set for all relevant files by tools/update_modelines.sh

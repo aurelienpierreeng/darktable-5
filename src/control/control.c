@@ -1,7 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2009-2024 darktable developers.
-    Copyright (c) 2012 James C. McPherson
+    Copyright (C) 2009-2025 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -16,9 +15,7 @@
     You should have received a copy of the GNU General Public License
     along with darktable.  If not, see <http://www.gnu.org/licenses/>.
 */
-#ifdef HAVE_CONFIG_H
-#include "config.h"
-#endif
+
 #include "bauhaus/bauhaus.h"
 #include "common/colorspaces.h"
 #include "common/darktable.h"
@@ -42,6 +39,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+
+#define DT_CTL_LOG_HISTORY_SIZE 1000
 
 static float _action_process_accels_show(const gpointer target,
                                          const dt_action_element_t element,
@@ -110,8 +109,13 @@ const dt_action_def_t dt_action_def_modifiers
       _action_elements_modifiers,
       NULL, TRUE };
 
-void dt_control_init(dt_control_t *s)
+void dt_control_init(const gboolean withgui)
 {
+  dt_control_t *s = darktable.control = calloc(1, sizeof(dt_control_t));
+  dt_atomic_set_int(&s->running, DT_CONTROL_STATE_DISABLED);
+
+  if(!withgui) return;
+
   s->actions_global = (dt_action_t){ DT_ACTION_TYPE_GLOBAL,
     "global",
     C_("accel", "global"),
@@ -193,14 +197,14 @@ void dt_control_init(dt_control_t *s)
 
   dt_action_insert_sorted(&s->actions_iops, &s->actions_focus);
 
-  s->widgets = g_hash_table_new(NULL, NULL);
   s->shortcuts = g_sequence_new(g_free);
   s->enable_fallbacks = dt_conf_get_bool("accel/enable_fallbacks");
   s->mapping_widget = NULL;
   s->confirm_mapping = TRUE;
   s->widget_definitions = g_ptr_array_new ();
   s->input_drivers = NULL;
-  dt_atomic_set_int(&s->running, DT_CONTROL_STATE_DISABLED);
+  dt_atomic_set_int(&s->quitting, 0);
+  dt_atomic_set_int(&s->pending_jobs, 0);
   s->cups_started = FALSE;
 
   dt_action_define_fallback(DT_ACTION_TYPE_IOP, &dt_action_def_iop);
@@ -215,22 +219,20 @@ void dt_control_init(dt_control_t *s)
   s->actions_modifiers = dt_action_define(&s->actions_global, NULL,
                                           N_("modifiers"), NULL, &dt_action_def_modifiers);
 
-  memset(s->vimkey, 0, sizeof(s->vimkey));
-  s->vimkey_cnt = 0;
-
   // same thread as init
   s->gui_thread = pthread_self();
 
-  // s->last_expose_time = dt_get_wtime();
   s->log_pos = s->log_ack = 0;
-  s->log_busy = 0;
+  s->busy = 0;
   s->log_message_timeout_id = 0;
   dt_pthread_mutex_init(&s->log_mutex, NULL);
 
   s->toast_pos = s->toast_ack = 0;
-  s->toast_busy = 0;
   s->toast_message_timeout_id = 0;
-  dt_pthread_mutex_init(&s->toast_mutex, NULL);
+
+  // persistent log history initialization
+  s->log_history = NULL;
+  dt_pthread_mutex_init(&s->log_history_mutex, NULL);
 
   pthread_cond_init(&s->cond, NULL);
   dt_pthread_mutex_init(&s->cond_mutex, NULL);
@@ -240,7 +242,7 @@ void dt_control_init(dt_control_t *s)
   dt_pthread_mutex_init(&s->progress_system.mutex, NULL);
 
   // start threads
-  dt_control_jobs_init(s);
+  dt_control_jobs_init();
 
   s->button_down = 0;
   s->button_down_which = 0;
@@ -258,15 +260,79 @@ void dt_control_allow_change_cursor()
   darktable.control->lock_cursor_shape = FALSE;
 }
 
-void dt_control_change_cursor(dt_cursor_t curs)
+// last cursor set by dt_control_change_cursor() or a direct call to
+// gdk_window_set_cursor() outside of functions below
+static GdkCursor* _prev_cursor = NULL;
+
+void _change_cursor_with_fallback(const char *cursor_name,
+                                  gboolean is_temp)
 {
-  if(!darktable.control->lock_cursor_shape)
+  GdkWindow *window = gtk_widget_get_window(dt_ui_main_window(darktable.gui->ui));
+  if(!window) return;
+  GdkDisplay *display = gdk_window_get_display(window);
+  GdkCursor *cursor = gdk_cursor_new_from_name(display, cursor_name);
+
+  // GTK3 fallback: some CSS cursor names are not supported by all
+  // backends (e.g. "wait" and "help" are missing from the GTK3 Win32
+  // mapping table despite Windows having IDC_WAIT and IDC_HELP;
+  // "none" is missing from both the Win32 and X11 backends).
+  // Fall back to the legacy GdkCursorType enum API for these cases.
+  // TODO(GTK4): remove this fallback when migrating to GTK4, where
+  // all backends support the full CSS cursor name spec.
+  if(!cursor)
   {
-    GtkWidget *widget = dt_ui_main_window(darktable.gui->ui);
-    GdkCursor *cursor = gdk_cursor_new_for_display(gdk_display_get_default(), curs);
-    gdk_window_set_cursor(gtk_widget_get_window(widget), cursor);
+    GdkCursorType type = GDK_LEFT_PTR;
+    if(!strcmp(cursor_name, "none"))           type = GDK_BLANK_CURSOR;
+    else if(!strcmp(cursor_name, "wait"))      type = GDK_WATCH;
+    else if(!strcmp(cursor_name, "grab"))      type = GDK_HAND1;
+    else if(!strcmp(cursor_name, "cell"))      type = GDK_PLUS;
+    else if(!strcmp(cursor_name, "help"))      type = GDK_QUESTION_ARROW;
+    else if(!strcmp(cursor_name, "ns-resize")) type = GDK_DOUBLE_ARROW;
+    cursor = gdk_cursor_new_for_display(display, type);
+  }
+
+  if(!is_temp && _prev_cursor)
+  {
+    // cursor change request via dt_control_change_cursor() is overriden
+    // by temp cursor, save new cursor to use when clear temp cursor
+    g_object_unref(_prev_cursor);
+    _prev_cursor = g_object_ref(cursor);
+  }
+  else if(!darktable.control->lock_cursor_shape)
+  {
+    gdk_window_set_cursor(window, cursor);
     g_object_unref(cursor);
   }
+}
+
+void dt_control_set_temp_cursor(const char *cursor_name)
+{
+  GdkWindow *window = gtk_widget_get_window(dt_ui_main_window(darktable.gui->ui));
+  if(!window) return;
+  // store cursor to return to once clear temp cursor if this is the
+  // initial setup of this temp cursor (as can call this multiple
+  // times to vary a temp cursor)
+  if(!_prev_cursor)
+  {
+    _prev_cursor = gdk_window_get_cursor(window);
+    g_object_ref(_prev_cursor);
+  }
+  _change_cursor_with_fallback(cursor_name, TRUE);
+}
+
+void dt_control_clear_temp_cursor()
+{
+  GdkWindow *window = gtk_widget_get_window(dt_ui_main_window(darktable.gui->ui));
+  if(!_prev_cursor) return;
+  if(window)
+    gdk_window_set_cursor(window, _prev_cursor);
+  g_object_unref(_prev_cursor);
+  _prev_cursor = NULL;
+}
+
+void dt_control_change_cursor(const char *cursor_name)
+{
+  _change_cursor_with_fallback(cursor_name, FALSE);
 }
 
 /* Some implementation and how-to use notes about control->running
@@ -288,30 +354,43 @@ void dt_control_change_cursor(dt_cursor_t curs)
 
 gboolean dt_control_running()
 {
-  dt_control_t *dc = darktable.control;
-  const int status = dc ? dt_atomic_get_int(&dc->running) : DT_CONTROL_STATE_DISABLED;
-  return status == DT_CONTROL_STATE_RUNNING;
+  return darktable.control && dt_atomic_get_int(&darktable.control->running) == DT_CONTROL_STATE_RUNNING;
 }
 
 void dt_control_quit()
 {
-  if(dt_control_running())
-  {
-    dt_control_t *dc = darktable.control;
+  // Make sure we proceed further only if control is running
+  if(!dt_control_running()) return;
+
+  dt_control_t *dc = darktable.control;
+  // make sure the rest is done only once
+  if(dt_atomic_exch_int(&dc->quitting, 1) == 1) return;
 
 #ifdef HAVE_PRINT
-    dt_printers_abort_discovery();
-    // Cups timeout could be pretty long, at least 30seconds
-    // but don't rely on cups returning correctly so a timeout
-    for(int i = 0; i < 40000 && !dc->cups_started; i++)
-      g_usleep(1000);
+  dt_printers_abort_discovery();
+  // Cups timeout could be pretty long, at least 30seconds
+  // but don't rely on cups returning correctly so a timeout
+  for(int i = 0; i < 40000 && !dc->cups_started; i++)
+    g_usleep(1000);
 #endif
 
-    dt_pthread_mutex_lock(&dc->cond_mutex);
-    // set the "pending cleanup work" flag to be handled in dt_control_shutdown()
-    dt_atomic_set_int(&dc->running, DT_CONTROL_STATE_CLEANUP);
-    dt_pthread_mutex_unlock(&dc->cond_mutex);
+  // We test pending jobs vs 1 as we always accept one DT_JOB_QUEUE_SYSTEM_FG job
+  if(dt_control_jobs_pending() > 1)
+  {
+    dt_control_log("<span foreground='#FF0000' background='#000000'>%s</span>",
+                   _("darktable will be locked until background work has been done"));
   }
+
+  for(int i = 0; i < 50 && (dt_control_jobs_pending() > 1); i++)
+  {
+    g_usleep(100000);
+    dt_gui_process_events();
+  }
+
+  dt_pthread_mutex_lock(&dc->cond_mutex);
+  // set the "pending cleanup work" flag to be handled in dt_control_shutdown()
+  dt_atomic_set_int(&dc->running, DT_CONTROL_STATE_CLEANUP);
+  dt_pthread_mutex_unlock(&dc->cond_mutex);
 
   if(g_atomic_int_get(&darktable.gui_running))
   {
@@ -320,11 +399,9 @@ void dt_control_quit()
   }
 }
 
-void dt_control_shutdown(dt_control_t *s)
+void dt_control_shutdown()
 {
-  if(!s)
-    return;
-
+  dt_control_t *s = darktable.control;
   dt_pthread_mutex_lock(&s->cond_mutex);
   const gboolean cleanup = dt_atomic_exch_int(&s->running, DT_CONTROL_STATE_DISABLED) == DT_CONTROL_STATE_CLEANUP;
   pthread_cond_broadcast(&s->cond);
@@ -333,7 +410,7 @@ void dt_control_shutdown(dt_control_t *s)
   int err = 0; // collect all joining errors
   /* first wait for gphoto device updater */
 #ifdef HAVE_GPHOTO2
-   err = pthread_join(s->update_gphoto_thread, NULL);
+   err = dt_pthread_join(s->update_gphoto_thread);
 #endif
 
   if(!cleanup)
@@ -342,39 +419,48 @@ void dt_control_shutdown(dt_control_t *s)
   dt_print(DT_DEBUG_CONTROL, "[dt_control_shutdown] closing control threads");
 
   /* then wait for kick_on_workers_thread */
-  err = pthread_join(s->kick_on_workers_thread, NULL);
+  err = dt_pthread_join(s->kick_on_workers_thread);
   dt_print(DT_DEBUG_CONTROL, "[dt_control_shutdown] joined kicker%s", err ? ", error" : "");
 
-  for(int k = 0; k < s->num_threads-1; k++)
+  for(int k = 0; k < s->num_threads; k++)
   {
-    err = pthread_join(s->thread[k], NULL);
+    err = dt_pthread_join(s->thread[k]);
     dt_print(DT_DEBUG_CONTROL, "[dt_control_shutdown] joined num_thread %i%s", k, err ? ", error" : "");
   }
 
   for(int k = 0; k < DT_CTL_WORKER_RESERVED; k++)
   {
-    err = pthread_join(s->thread_res[k], NULL);
+    err = dt_pthread_join(s->thread_res[k]);
     dt_print(DT_DEBUG_CONTROL, "[dt_control_shutdown] joined worker %i%s", k, err ? ", error" : "");
   }
 }
 
-void dt_control_cleanup(dt_control_t *s)
+void dt_control_cleanup(const gboolean withgui)
 {
-  if(!s)
-    return;
-  // vacuum TODO: optional?
-  // DT_DEBUG_SQLITE3_EXEC(dt_database_get(darktable.db), "PRAGMA incremental_vacuum(0)", NULL, NULL, NULL);
-  // DT_DEBUG_SQLITE3_EXEC(dt_database_get(darktable.db), "vacuum", NULL, NULL, NULL);
-  dt_control_jobs_cleanup(s);
-  dt_pthread_mutex_destroy(&s->queue_mutex);
-  dt_pthread_mutex_destroy(&s->cond_mutex);
-  dt_pthread_mutex_destroy(&s->log_mutex);
-  dt_pthread_mutex_destroy(&s->toast_mutex);
-  dt_pthread_mutex_destroy(&s->res_mutex);
-  dt_pthread_mutex_destroy(&s->progress_system.mutex);
-  if(s->widgets) g_hash_table_destroy(s->widgets);
-  if(s->shortcuts) g_sequence_free(s->shortcuts);
-  if(s->input_drivers) g_slist_free_full(s->input_drivers, g_free);
+  dt_control_t *s = darktable.control;
+  if(withgui)
+  {
+    // vacuum TODO: optional?
+    // DT_DEBUG_SQLITE3_EXEC(dt_database_get(darktable.db), "PRAGMA incremental_vacuum(0)", NULL, NULL, NULL);
+    // DT_DEBUG_SQLITE3_EXEC(dt_database_get(darktable.db), "vacuum", NULL, NULL, NULL);
+    dt_control_jobs_cleanup();
+    dt_pthread_mutex_destroy(&s->queue_mutex);
+    dt_pthread_mutex_destroy(&s->cond_mutex);
+    dt_pthread_mutex_destroy(&s->log_mutex);
+    dt_pthread_mutex_destroy(&s->log_history_mutex);
+    if(s->log_history)
+    {
+      for(GList *elem = s->log_history; elem; elem = elem->next)
+        g_free(elem->data);
+      g_list_free(s->log_history);
+    }
+    dt_pthread_mutex_destroy(&s->res_mutex);
+    dt_pthread_mutex_destroy(&s->progress_system.mutex);
+    if(s->shortcuts) g_sequence_free(s->shortcuts);
+    if(s->input_drivers) g_slist_free_full(s->input_drivers, g_free);
+  }
+  darktable.control = NULL;
+  free(s);
 }
 
 
@@ -389,14 +475,6 @@ gboolean dt_control_configure(GtkWidget *da,
   // re-configure all components:
   dt_view_manager_configure(darktable.view_manager, event->width, event->height);
   return TRUE;
-}
-
-static GdkRGBA _lookup_color(GtkStyleContext *context, const char *name)
-{
-  GdkRGBA color, fallback = {1.0, 0.0, 0.0, 1.0};
-  if(!gtk_style_context_lookup_color (context, name, &color))
-    color = fallback;
-  return color;
 }
 
 void dt_control_draw_busy_msg(cairo_t *cr, int width, int height)
@@ -431,60 +509,26 @@ void dt_control_draw_busy_msg(cairo_t *cr, int width, int height)
   g_object_unref(layout);
 }
 
-void *dt_control_expose(void *voidptr)
+void dt_control_expose(GtkWidget *widget, cairo_t *cr)
 {
   int pointerx, pointery;
-  if(!darktable.gui->surface) return NULL;
-
-  dt_control_t *dc = darktable.control;
-  const int width = dt_cairo_image_surface_get_width(darktable.gui->surface);
-  const int height = dt_cairo_image_surface_get_height(darktable.gui->surface);
-  GtkWidget *widget = dt_ui_center(darktable.gui->ui);
   gdk_window_get_device_position(gtk_widget_get_window(widget),
       gdk_seat_get_pointer(gdk_display_get_default_seat(gtk_widget_get_display(widget))),
       &pointerx, &pointery, NULL);
 
-  // create a gtk-independent surface to draw on
-  cairo_surface_t *cst = dt_cairo_image_surface_create(CAIRO_FORMAT_ARGB32, width, height);
-  cairo_t *cr = cairo_create(cst);
+  dt_control_t *dc = darktable.control;
+  dc->width = gtk_widget_get_allocated_width(widget);
+  dc->height = gtk_widget_get_allocated_height(widget);
 
-  // TODO: control_expose: only redraw the part not overlapped by
-  // temporary control panel show!
-  //
-  dc->width = width;
-  dc->height = height;
-
-  GtkStyleContext *context = gtk_widget_get_style_context(widget);
-
-  // look up some colors once
-  const GdkRGBA bg_color = _lookup_color(context, "bg_color");
-
-  gdk_cairo_set_source_rgba(cr, &bg_color);
-  cairo_save(cr);
-  cairo_rectangle(cr, 0, 0, width, height);
-  cairo_clip(cr);
-  cairo_new_path(cr);
-  // draw view
-  dt_view_manager_expose(darktable.view_manager, cr, width, height, pointerx, pointery);
-  cairo_restore(cr);
+  dt_view_manager_expose(darktable.view_manager, cr, dc->width, dc->height, pointerx, pointery);
 
   // draw busy indicator
   dt_pthread_mutex_lock(&dc->log_mutex);
-  if(dc->log_busy > 0)
+  if(dc->busy > 0)
   {
-    dt_control_draw_busy_msg(cr, width, height);
+    dt_control_draw_busy_msg(cr, dc->width, dc->height);
   }
   dt_pthread_mutex_unlock(&dc->log_mutex);
-
-  cairo_destroy(cr);
-
-  cairo_t *cr_pixmap = cairo_create(darktable.gui->surface);
-  cairo_set_source_surface(cr_pixmap, cst, 0, 0);
-  cairo_paint(cr_pixmap);
-  cairo_destroy(cr_pixmap);
-
-  cairo_surface_destroy(cst);
-  return NULL;
 }
 
 gboolean dt_control_draw_endmarker(GtkWidget *widget,
@@ -548,7 +592,7 @@ static gboolean _dt_ctl_switch_mode_to(gpointer user_data)
   const char *mode = (const char*)user_data;
   _dt_ctl_switch_mode_prepare();
   dt_view_manager_switch(darktable.view_manager, mode);
-  return FALSE;
+  return G_SOURCE_REMOVE;
 }
 
 static gboolean _dt_ctl_switch_mode_to_by_view(gpointer user_data)
@@ -556,7 +600,7 @@ static gboolean _dt_ctl_switch_mode_to_by_view(gpointer user_data)
   const dt_view_t *view = (const dt_view_t*)user_data;
   _dt_ctl_switch_mode_prepare();
   dt_view_manager_switch_by_view(darktable.view_manager, view);
-  return FALSE;
+  return G_SOURCE_REMOVE;
 }
 
 void dt_ctl_switch_mode_to(const char *mode)
@@ -589,6 +633,13 @@ void dt_ctl_switch_mode()
   dt_ctl_switch_mode_to(mode);
 }
 
+static void _control_log_redraw()
+{
+  if(dt_control_running())
+    DT_CONTROL_SIGNAL_RAISE(DT_SIGNAL_CONTROL_LOG_REDRAW);
+}
+
+
 static gboolean _dt_ctl_log_message_timeout_callback(gpointer data)
 {
   dt_control_t *dc = darktable.control;
@@ -596,18 +647,39 @@ static gboolean _dt_ctl_log_message_timeout_callback(gpointer data)
   dc->log_ack = dc->log_pos;
   dc->log_message_timeout_id = 0;
   dt_pthread_mutex_unlock(&dc->log_mutex);
-  dt_control_log_redraw();
+  _control_log_redraw();
   return FALSE;
+}
+
+void dt_control_log_ack_all(void)
+{
+  if(!dt_control_running()) return;
+  dt_control_t *dc = darktable.control;
+  dt_pthread_mutex_lock(&dc->log_mutex);
+  if(dc->log_message_timeout_id)
+  {
+    g_source_remove(dc->log_message_timeout_id);
+    dc->log_message_timeout_id = 0;
+  }
+  dc->log_ack = dc->log_pos;
+  dt_pthread_mutex_unlock(&dc->log_mutex);
+  _control_log_redraw();
+}
+
+static void _control_toast_redraw()
+{
+  if(dt_control_running())
+    DT_CONTROL_SIGNAL_RAISE(DT_SIGNAL_CONTROL_TOAST_REDRAW);
 }
 
 static gboolean _dt_ctl_toast_message_timeout_callback(gpointer data)
 {
   dt_control_t *dc = darktable.control;
-  dt_pthread_mutex_lock(&dc->toast_mutex);
+  dt_pthread_mutex_lock(&dc->log_mutex);
   dc->toast_ack = dc->toast_pos;
   dc->toast_message_timeout_id = 0;
-  dt_pthread_mutex_unlock(&dc->toast_mutex);
-  dt_control_toast_redraw();
+  dt_pthread_mutex_unlock(&dc->log_mutex);
+  _control_toast_redraw();
   return FALSE;
 }
 
@@ -649,7 +721,7 @@ void dt_control_button_pressed(double x,
   dt_pthread_mutex_unlock(&dc->log_mutex);
 
   // ack toast message:
-  dt_pthread_mutex_lock(&dc->toast_mutex);
+  dt_pthread_mutex_lock(&dc->log_mutex);
   if(dc->toast_ack != dc->toast_pos)
   {
     if(which == 1 && y > yc - 10.0 && y < yc + 10.0)
@@ -660,11 +732,11 @@ void dt_control_button_pressed(double x,
         dc->toast_message_timeout_id = 0;
       }
       dc->toast_ack = dc->toast_pos;
-      dt_pthread_mutex_unlock(&dc->toast_mutex);
+      dt_pthread_mutex_unlock(&dc->log_mutex);
       return;
     }
   }
-  dt_pthread_mutex_unlock(&dc->toast_mutex);
+  dt_pthread_mutex_unlock(&dc->log_mutex);
 
   if(!dt_view_manager_button_pressed(darktable.view_manager, x, y,
                                      pressure, which, type, state))
@@ -673,13 +745,14 @@ void dt_control_button_pressed(double x,
 
 static gboolean _redraw_center(gpointer user_data)
 {
-  dt_control_log_redraw();
-  dt_control_toast_redraw();
+  _control_log_redraw();
+  _control_toast_redraw();
   return FALSE; // don't call this again
 }
 
 void dt_control_log(const char *msg, ...)
 {
+  if(!dt_control_running()) return;
   dt_control_t *dc = darktable.control;
   dt_pthread_mutex_lock(&dc->log_mutex);
   va_list ap;
@@ -695,9 +768,6 @@ void dt_control_log(const char *msg, ...)
     dc->log_pos++;
   }
 
-  g_free(escaped_msg);
-  va_end(ap);
-
   if(timeout)
     g_source_remove(dc->log_message_timeout_id);
 
@@ -705,14 +775,75 @@ void dt_control_log(const char *msg, ...)
     = g_timeout_add(DT_CTL_LOG_TIMEOUT + 1000 * (msglen / 40),
                     _dt_ctl_log_message_timeout_callback, NULL);
   dt_pthread_mutex_unlock(&dc->log_mutex);
+
+  // store in persistent history (with deduplication)
+  dt_pthread_mutex_lock(&dc->log_history_mutex);
+  if(g_list_length(dc->log_history) > 0)
+  {
+    char *last_msg = ((char *)g_list_last(dc->log_history)->data) + 32;
+    if(g_strcmp0(escaped_msg, last_msg) == 0)
+    {
+      g_free(escaped_msg);
+      va_end(ap);
+      dt_pthread_mutex_unlock(&dc->log_history_mutex);
+      // redraw center later in gui thread:
+      g_idle_add(_redraw_center, 0);
+      return;
+    }
+  }
+
+  // get current time
+  GDateTime *now = g_date_time_new_now_local();
+  gchar *timestamp = g_date_time_format(now, "%H:%M:%S");
+  g_date_time_unref(now);
+
+  // allocate entry: 32 bytes for timestamp + strlen(escaped_msg) + 1 for message
+  const size_t msg_len = strlen(escaped_msg) + 1;
+  char *entry = g_malloc(32 + msg_len);
+  g_strlcpy(entry, timestamp, 32);
+  memcpy(entry + 32, escaped_msg, msg_len);
+  g_free(timestamp);
+
+  dc->log_history = g_list_append(dc->log_history, entry);
+
+  // remove oldest entry if over limit
+  if(g_list_length(dc->log_history) > DT_CTL_LOG_HISTORY_SIZE)
+  {
+    g_free(dc->log_history->data);
+    dc->log_history = g_list_delete_link(dc->log_history, dc->log_history);
+  }
+  dt_pthread_mutex_unlock(&dc->log_history_mutex);
+
+  g_free(escaped_msg);
+  va_end(ap);
+
   // redraw center later in gui thread:
   g_idle_add(_redraw_center, 0);
+}
+
+GList *dt_control_log_history_get_entries(void)
+{
+  dt_control_t *dc = darktable.control;
+  if(!dc) return NULL;
+
+  dt_pthread_mutex_lock(&dc->log_history_mutex);
+
+  GList *result = NULL;
+  for(GList *elem = dc->log_history; elem; elem = elem->next)
+  {
+    char *entry = (char *)elem->data;
+    gchar *line = g_strdup_printf("[%s] %s", entry, entry + 32);
+    result = g_list_append(result, line);
+  }
+
+  dt_pthread_mutex_unlock(&dc->log_history_mutex);
+  return result;
 }
 
 static void _toast_log(const gboolean markup, const char *msg, va_list ap)
 {
   dt_control_t *dc = darktable.control;
-  dt_pthread_mutex_lock(&dc->toast_mutex);
+  dt_pthread_mutex_lock(&dc->log_mutex);
 
   // if we don't want markup, we escape <>&... so they are not interpreted later
   if(markup)
@@ -730,13 +861,14 @@ static void _toast_log(const gboolean markup, const char *msg, va_list ap)
 
   dc->toast_message_timeout_id
       = g_timeout_add(DT_CTL_TOAST_TIMEOUT, _dt_ctl_toast_message_timeout_callback, NULL);
-  dt_pthread_mutex_unlock(&dc->toast_mutex);
+  dt_pthread_mutex_unlock(&dc->log_mutex);
   // redraw center later in gui thread:
   g_idle_add(_redraw_center, 0);
 }
 
 void dt_toast_log(const char *msg, ...)
 {
+  if(!dt_control_running()) return;
   va_list ap;
   va_start(ap, msg);
   _toast_log(FALSE, msg, ap);
@@ -745,80 +877,49 @@ void dt_toast_log(const char *msg, ...)
 
 void dt_toast_markup_log(const char *msg, ...)
 {
+  if(!dt_control_running()) return;
   va_list ap;
   va_start(ap, msg);
   _toast_log(TRUE, msg, ap);
   va_end(ap);
 }
 
-static void _control_log_ack_all()
+void dt_control_busy_enter()
 {
+  if(!dt_control_running()) return;
   dt_control_t *dc = darktable.control;
   dt_pthread_mutex_lock(&dc->log_mutex);
-  dc->log_ack = dc->log_pos;
-  dt_pthread_mutex_unlock(&dc->log_mutex);
-  dt_control_queue_redraw_center();
-}
-
-void dt_control_log_busy_enter()
-{
-  dt_control_t *dc = darktable.control;
-  dt_pthread_mutex_lock(&dc->log_mutex);
-  dc->log_busy++;
+  dc->busy++;
   dt_pthread_mutex_unlock(&dc->log_mutex);
 }
 
-void dt_control_toast_busy_enter()
+void dt_control_busy_leave()
 {
-  dt_control_t *dc = darktable.control;
-  dt_pthread_mutex_lock(&dc->toast_mutex);
-  dc->toast_busy++;
-  dt_pthread_mutex_unlock(&dc->toast_mutex);
-}
-
-void dt_control_log_busy_leave()
-{
+  if(!dt_control_running()) return;
   dt_control_t *dc = darktable.control;
   dt_pthread_mutex_lock(&dc->log_mutex);
-  dc->log_busy--;
+  dc->busy--;
   dt_pthread_mutex_unlock(&dc->log_mutex);
-  /* lets redraw */
-  dt_control_queue_redraw_center();
-}
-
-void dt_control_toast_busy_leave()
-{
-  dt_control_t *dc = darktable.control;
-  dt_pthread_mutex_lock(&dc->toast_mutex);
-  dc->toast_busy--;
-  dt_pthread_mutex_unlock(&dc->toast_mutex);
   /* lets redraw */
   dt_control_queue_redraw_center();
 }
 
 void dt_control_queue_redraw()
 {
-  DT_CONTROL_SIGNAL_RAISE(DT_SIGNAL_CONTROL_REDRAW_ALL);
+  if(dt_control_running())
+    DT_CONTROL_SIGNAL_RAISE(DT_SIGNAL_CONTROL_REDRAW_ALL);
 }
 
 void dt_control_queue_redraw_center()
 {
-  DT_CONTROL_SIGNAL_RAISE(DT_SIGNAL_CONTROL_REDRAW_CENTER);
+  if(dt_control_running())
+    DT_CONTROL_SIGNAL_RAISE(DT_SIGNAL_CONTROL_REDRAW_CENTER);
 }
 
 void dt_control_navigation_redraw()
 {
-  DT_CONTROL_SIGNAL_RAISE(DT_SIGNAL_CONTROL_NAVIGATION_REDRAW);
-}
-
-void dt_control_log_redraw()
-{
-  DT_CONTROL_SIGNAL_RAISE(DT_SIGNAL_CONTROL_LOG_REDRAW);
-}
-
-void dt_control_toast_redraw()
-{
-  DT_CONTROL_SIGNAL_RAISE(DT_SIGNAL_CONTROL_TOAST_REDRAW);
+  if(dt_control_running())
+    DT_CONTROL_SIGNAL_RAISE(DT_SIGNAL_CONTROL_NAVIGATION_REDRAW);
 }
 
 static int _widget_queue_draw(void *widget)
@@ -837,115 +938,12 @@ void dt_control_queue_redraw_widget(GtkWidget *widget)
   }
 }
 
-int dt_control_key_pressed_override(guint key, guint state)
+void dt_control_hinter_message(const char *message)
 {
-  // TODO: if darkroom mode
-  // did a : vim-style command start?
-  static GList *autocomplete = NULL;
-  dt_control_t *dc = darktable.control;
-  if(dc->vimkey_cnt)
-  {
-    gunichar unichar = gdk_keyval_to_unicode(key);
-    if(key == GDK_KEY_Return)
-    {
-      if(!strcmp(dc->vimkey, ":q"))
-      {
-        dt_control_quit();
-      }
-      else
-      {
-        dt_bauhaus_vimkey_exec(dc->vimkey);
-      }
-      dc->vimkey[0] = 0;
-      dc->vimkey_cnt = 0;
-      _control_log_ack_all();
-      g_list_free(autocomplete);
-      autocomplete = NULL;
-    }
-    else if(key == GDK_KEY_Escape)
-    {
-      dc->vimkey[0] = 0;
-      dc->vimkey_cnt = 0;
-      _control_log_ack_all();
-      g_list_free(autocomplete);
-      autocomplete = NULL;
-    }
-    else if(key == GDK_KEY_BackSpace)
-    {
-      dc->vimkey_cnt -= (dc->vimkey + dc->vimkey_cnt)
-                        - g_utf8_prev_char(dc->vimkey + dc->vimkey_cnt);
-      dc->vimkey[dc->vimkey_cnt] = 0;
-      if(dc->vimkey_cnt == 0)
-        _control_log_ack_all();
-      else
-        dt_control_log("%s", dc->vimkey);
-      g_list_free(autocomplete);
-      autocomplete = NULL;
-    }
-    else if(key == GDK_KEY_Tab)
-    {
-      // TODO: also support :preset and :get?
-      // auto complete:
-      if(dc->vimkey_cnt < 5)
-      {
-        g_strlcpy(dc->vimkey, ":set ", sizeof(dc->vimkey));
-        dc->vimkey_cnt = 5;
-      }
-      else if(!autocomplete)
-      {
-        // TODO: handle '.'-separated things separately
-        // this is a static list, and tab cycles through the list
-        if(dc->vimkey_cnt < strlen(dc->vimkey))
-          dc->vimkey[dc->vimkey_cnt] = 0;
-        else
-          autocomplete = dt_bauhaus_vimkey_complete(dc->vimkey + 5);
-      }
-      if(autocomplete)
-      {
-        // pop first.
-        // the paths themselves are owned by bauhaus,
-        // no free required.
-        dc->vimkey[dc->vimkey_cnt] = 0;
-        g_strlcat(dc->vimkey, (char *)autocomplete->data, sizeof(dc->vimkey));
-        autocomplete = g_list_remove(autocomplete, autocomplete->data);
-      }
-      dt_control_log("%s", dc->vimkey);
-    }
-    else if(g_unichar_isprint(unichar)) // printable unicode character
-    {
-      gchar utf8[6] = { 0 };
-      g_unichar_to_utf8(unichar, utf8);
-      g_strlcat(dc->vimkey, utf8, sizeof(dc->vimkey));
-      dc->vimkey_cnt = strlen(dc->vimkey);
-      dt_control_log("%s", dc->vimkey);
-      g_list_free(autocomplete);
-      autocomplete = NULL;
-    }
-    else if(key == GDK_KEY_Up)
-    {
-      // TODO: step history up and copy to vimkey
-    }
-    else if(key == GDK_KEY_Down)
-    {
-      // TODO: step history down and copy to vimkey
-    }
-    return 1;
-  }
-  else if(key == ':')
-  {
-    dc->vimkey[0] = ':';
-    dc->vimkey[1] = 0;
-    dc->vimkey_cnt = 1;
-    dt_control_log("%s", dc->vimkey);
-    return 1;
-  }
-
-  return 0;
-}
-
-void dt_control_hinter_message(const struct dt_control_t *s, const char *message)
-{
-  if(s->proxy.hinter.module)
+  if(!dt_control_running())
+    return;
+  dt_control_t *s = darktable.control;
+  if(s && s->proxy.hinter.module)
     return s->proxy.hinter.set_message(s->proxy.hinter.module, message);
 }
 

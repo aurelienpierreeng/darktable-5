@@ -35,28 +35,12 @@ typedef enum dt_iop_colorequal_channel_t
 
 #define SATSIZE 4096.0f
 
-static inline float _interpolatef(const float a, const float b, const float c)
-{
-  return a * (b - c) + c;
-}
-
 static inline float _get_satweight(const float sat, global float *weights)
 {
-  const float isat = SATSIZE * (1.0f + clamp(sat, -1.0f, 1.0f - (1.0f / SATSIZE)));
+  const float isat = (float)SATSIZE * (1.0f + clamp(sat, -1.0f, 1.0f - (1.0f / SATSIZE)));
   const float base = floor(isat);
   const int i = (int)base;
   return weights[i] + (isat - base) * (weights[i+1] - weights[i]);
-}
-
-static inline float _scharr_gradient(global float *in,
-                                     const size_t k,
-                                     const int w)
-{
-  const float gx = 47.0f / 255.0f * (in[k-w-1] - in[k-w+1] + in[k+w-1] - in[k+w+1])
-                + 162.0f / 255.0f * (in[k-1]   - in[k+1]);
-  const float gy = 47.0f / 255.0f * (in[k-w-1] - in[k+w-1] + in[k-w+1] - in[k+w+1])
-                + 162.0f / 255.0f * (in[k-w]   - in[k+w]);
-  return dt_fast_hypot(gx, gy);
 }
 
 static inline float gamut_map_HSB(const float4 HSB, global float *gamut_LUT, const float L_white)
@@ -157,8 +141,8 @@ __kernel void apply_prefilter(global float2 *uv,
                              a[k].z * UV.x + a[k].w * UV.y + b[k].y);
 
   const float satweight = _get_satweight(saturation[k] - sat_shift, weights);
-  uv[k].x = _interpolatef(satweight, cv.x, UV.x);
-  uv[k].y = _interpolatef(satweight, cv.y, UV.y);
+  uv[k].x = mix(UV.x, cv.x, satweight);
+  uv[k].y = mix(UV.y, cv.y, satweight);
 }
 
 __kernel void prepare_correlations(global float2 *corrections,
@@ -263,9 +247,9 @@ __kernel void apply_guided(global float2 *uv,
   const float2 CV = { a[k].x * uv[k].x + a[k].y * uv[k].y + b[k].x,
                       a[k].z * uv[k].x + a[k].w * uv[k].y + b[k].y };
 
-  corrections[k].y = _interpolatef(_get_satweight(saturation[k] - sat_shift, weights), CV.x, 1.0f);
-  const float gradient_weight = 1.0f - clamp(scharr[k], 0.0f, 1.0f);
-  b_corrections[k] = _interpolatef(gradient_weight * _get_satweight(saturation[k] - bright_shift, weights), CV.y, 0.0f);
+  corrections[k].y = 1.0f + (CV.x - 1.0f) * _get_satweight(saturation[k] - sat_shift, weights);
+  const float gradient_weight = 1.0f - clipf(scharr[k]);
+  b_corrections[k] = CV.y * gradient_weight * _get_satweight(saturation[k] - bright_shift, weights);
 }
 
 __kernel void sample_input(__read_only image2d_t dev_in,
@@ -448,7 +432,7 @@ __kernel void process_data(global float2 *uv,
   {
     const int kk = mad24(clamp(row, 1, height - 2), width, clamp(col, 1, width - 2));
 
-    const float kscharr = fmax(0.0f, _scharr_gradient(saturation, kk, width) - 0.02f);
+    const float kscharr = fmax(0.0f, scharr_gradient(saturation, kk, width) - 0.02f);
     Lscharr[k] = gradient_amp * kscharr * kscharr;
   }
 

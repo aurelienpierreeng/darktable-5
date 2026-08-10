@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2010-2023 darktable developers.
+    Copyright (C) 2010-2026 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -24,9 +24,6 @@
 #pragma GCC optimize ("finite-math-only", "no-math-errno", "fast-math", "fp-contract=fast")
 #endif
 
-#ifdef HAVE_CONFIG_H
-#include "config.h"
-#endif
 #include <assert.h>
 #include <stdlib.h>
 #include <string.h>
@@ -52,11 +49,11 @@ void init_presets(dt_iop_module_so_t *self)
 
   dt_gui_presets_add_generic(_("fill-light 0.25EV with 4 zones"), self->op, self->version(),
                              &(dt_iop_relight_params_t){ 0.25, 0.25, 4.0 }, sizeof(dt_iop_relight_params_t),
-                             1, DEVELOP_BLEND_CS_RGB_DISPLAY);
+                             TRUE, DEVELOP_BLEND_CS_RGB_DISPLAY);
 
   dt_gui_presets_add_generic(_("fill-shadow -0.25EV with 4 zones"), self->op, self->version(),
                              &(dt_iop_relight_params_t){ -0.25, 0.25, 4.0 }, sizeof(dt_iop_relight_params_t),
-                             1, DEVELOP_BLEND_CS_RGB_DISPLAY);
+                             TRUE, DEVELOP_BLEND_CS_RGB_DISPLAY);
 
   dt_database_release_transaction(darktable.db);
 }
@@ -188,7 +185,7 @@ void cleanup_global(dt_iop_module_so_t *self)
 
 static void center_callback(GtkDarktableGradientSlider *slider, dt_iop_module_t *self)
 {
-  if(darktable.gui->reset) return;
+  DT_GUARD_GUI_UPDATE();
   dt_iop_relight_params_t *p = self->params;
   dt_iop_color_picker_reset(self, TRUE);
   p->center = dtgtk_gradient_slider_get_value(slider);
@@ -253,7 +250,6 @@ void gui_init(dt_iop_module_t *self)
   gtk_widget_set_tooltip_text(g->exposure, _("the fill-light in EV"));
 
   /* lightnessslider */
-  GtkBox *sliderbox = GTK_BOX(gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0));
 #define NEUTRAL_GRAY 0.5
   static const GdkRGBA _gradient_L[]
       = { { 0, 0, 0, 1.0 }, { NEUTRAL_GRAY, NEUTRAL_GRAY, NEUTRAL_GRAY, 1.0 } };
@@ -261,10 +257,9 @@ void gui_init(dt_iop_module_t *self)
   g->center = DTGTK_GRADIENT_SLIDER(dtgtk_gradient_slider_new_with_color_and_name(_gradient_L[0], _gradient_L[1], "gslider-relight"));
   gtk_widget_set_tooltip_text(GTK_WIDGET(g->center), _("select the center of fill-light\nctrl+click to select an area"));
   g_signal_connect(G_OBJECT(g->center), "value-changed", G_CALLBACK(center_callback), self);
-  gtk_box_pack_start(sliderbox, GTK_WIDGET(g->center), TRUE, TRUE, 0);
-  g->colorpicker = dt_color_picker_new(self, DT_COLOR_PICKER_POINT_AREA, GTK_WIDGET(sliderbox));
+  g->colorpicker = dt_color_picker_new(self, DT_COLOR_PICKER_POINT_AREA, NULL);
   gtk_widget_set_tooltip_text(GTK_WIDGET(g->colorpicker), _("toggle tool for picking median lightness in image"));
-  gtk_box_pack_start(GTK_BOX(self->widget), GTK_WIDGET(sliderbox), TRUE, FALSE, 0);
+  dt_gui_box_add(self->widget, dt_gui_hbox(dt_gui_expand(g->center), g->colorpicker));
 
   g->width = dt_bauhaus_slider_from_params(self, N_("width"));
   gtk_widget_set_tooltip_text(g->width, _("width of fill-light area defined in zones"));

@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2009-2024 darktable developers.
+    Copyright (C) 2009-2026 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -40,9 +40,6 @@
 
 #include "external/ThreadSafetyAnalysis.h"
 
-#ifdef HAVE_CONFIG_H
-#include "config.h"
-#endif
 #include "common/database.h"
 #include "common/dtpthread.h"
 #include "common/dttypes.h"
@@ -143,9 +140,7 @@ typedef unsigned int u_int;
 // for signal debugging symbols
 #include "control/signal.h"
 
-#ifdef __cplusplus
-extern "C" {
-#endif /* __cplusplus */
+G_BEGIN_DECLS
 
 /* Create cloned functions for various CPU SSE generations */
 /* See for instructions https://hannes.hauswedell.net/post/2017/12/09/fmv/ */
@@ -162,6 +157,10 @@ extern "C" {
 #else
 #define __DT_CLONE_TARGETS__
 #endif
+
+
+#define STR_YESNO(b) ((b) ? "YES" : "NO")
+#define STR_TRUEFALSE(b) ((b) ? "TRUE" : "FALSE")
 
 typedef int32_t dt_imgid_t;
 typedef int32_t dt_filmid_t;
@@ -197,7 +196,7 @@ typedef int32_t dt_mask_id_t;
 // version of current performance configuration version
 // if you want to run an updated version of the performance configuration later
 // bump this number and make sure you have an updated logic in dt_configure_runtime_performance()
-#define DT_CURRENT_PERFORMANCE_CONFIGURE_VERSION 17
+#define DT_CURRENT_PERFORMANCE_CONFIGURE_VERSION 19
 #define DT_PERF_INFOSIZE 4096
 
 // every module has to define this:
@@ -250,6 +249,38 @@ char *dt_version_major_minor();
 #define INVPHI 0.61803398874989479F
 #endif
 
+
+/* Some CPU demosaicers do internal tiling, this decreases mem pressure while
+   increasing performance as processed data is available in cpu cache.
+   The default values have been calculated for a cachesize of 1MB per thread,
+   this is mostly still valid in 2026 but you may tune for performance.
+
+   Due to internal code AMAZETS should be a multiple of 32, for RCD and LMMSE
+   a multiple of 8.
+
+   Note: for the curious, if we calculate the tilesizes at runtime we loose the
+   performance gain as the compiler can't optimize that much.
+*/
+#ifndef DT_RCD_TILESIZE
+#define DT_RCD_TILESIZE 112
+#endif
+
+#ifndef DT_LMMSE_TILESIZE
+#define DT_LMMSE_TILESIZE 136
+#endif
+
+#ifndef AMAZETS
+#define AMAZETS 160
+#endif
+
+#ifndef DT_MARKESTEIJN_TS
+#define DT_MARKESTEIJN_TS 122
+#endif
+
+#ifndef DT_FDC_TS
+#define DT_FDC_TS 122
+#endif
+
 // NaN-safe clamping (NaN compares false, and will thus result in H)
 #define CLAMPS(A, L, H) ((A) > (L) ? ((A) < (H) ? (A) : (H)) : (L))
 
@@ -269,6 +300,23 @@ char *dt_version_major_minor();
   #define DT_FMA(x, y, z) ((x) * (y) + (z))
 #endif
 
+#define DT_TRY_GUI_UPDATE(ret)                                         \
+     if(!dt_atomic_incr_int_if_zero(&darktable.gui->reset)) return ret \
+
+#define DT_GUARD_GUI_UPDATE(ret)                                       \
+     if(dt_atomic_get_int(&darktable.gui->reset) != 0) return ret      \
+
+#define DT_IN_GUI_UPDATE() (dt_atomic_get_int(&darktable.gui->reset)>0)
+
+#define DT_CLEAR_GUI_UPDATE()                                       \
+    dt_atomic_set_int(&darktable.gui->reset, 0)                     \
+
+#define DT_ENTER_GUI_UPDATE()                                       \
+    dt_atomic_incr_int(&darktable.gui->reset)                       \
+
+#define DT_LEAVE_GUI_UPDATE()                                       \
+    dt_atomic_decr_int(&darktable.gui->reset)                       \
+
 struct dt_gui_gtk_t;
 struct dt_control_t;
 struct dt_develop_t;
@@ -282,9 +330,24 @@ struct dt_bauhaus_t;
 struct dt_undo_t;
 struct dt_colorspaces_t;
 struct dt_l10n_t;
+#ifdef HAVE_AI
+struct dt_ai_registry_t;
+struct dt_ai_environment_t;
+struct dt_seg_context_t;
+
+typedef struct dt_ai_seg_t
+{
+  struct dt_ai_environment_t *env;
+  struct dt_seg_context_t *ctx;
+  gboolean model_loaded;
+  gboolean signal_connected;
+} dt_ai_seg_t;
+#endif
 
 typedef float dt_boundingbox_t[4];  //(x,y) of upperleft, then (x,y) of lowerright
 typedef float dt_pickerbox_t[8];
+typedef float dt_pickerpoint_t[2];
+typedef float dt_dev_zoom_pos_t[6];
 
 typedef enum dt_debug_thread_t
 {
@@ -317,8 +380,9 @@ typedef enum dt_debug_thread_t
   DT_DEBUG_PIPE           = 1 << 25,
   DT_DEBUG_EXPOSE         = 1 << 26,
   DT_DEBUG_PICKER         = 1 << 27,
+  DT_DEBUG_AI             = 1 << 28,
   DT_DEBUG_ALL            = 0xffffffff & ~DT_DEBUG_VERBOSE,
-  DT_DEBUG_COMMON         = DT_DEBUG_OPENCL | DT_DEBUG_DEV | DT_DEBUG_MASKS | DT_DEBUG_PARAMS | DT_DEBUG_IMAGEIO | DT_DEBUG_PIPE,
+  DT_DEBUG_COMMON         = DT_DEBUG_OPENCL | DT_DEBUG_PARAMS | DT_DEBUG_IMAGEIO | DT_DEBUG_PIPE | DT_DEBUG_LUA | DT_DEBUG_AI,
   DT_DEBUG_RESTRICT       = DT_DEBUG_VERBOSE | DT_DEBUG_PERF,
 } dt_debug_thread_t;
 
@@ -333,19 +397,15 @@ typedef struct dt_sys_resources_t
   size_t mipmap_memory;
   int *fractions;   // fractions are calculated as res=input / 1024  * fraction
   int *refresource; // for the debug resource modes we use fixed settings
-  int group;
   int level;
-  gboolean tunehead;
 } dt_sys_resources_t;
 
 typedef struct dt_backthumb_t
 {
   double time;
   double idle;
-  gboolean service;
-  gboolean running;
+  int32_t state;
   gboolean capable;
-  int32_t mipsize;
 } dt_backthumb_t;
 
 typedef struct dt_gimp_t
@@ -356,6 +416,15 @@ typedef struct dt_gimp_t
   dt_imgid_t imgid;
   gboolean error;
 } dt_gimp_t;
+
+typedef struct dt_splash_t
+{
+  GtkWidget *start_screen;
+  GtkWidget *progress_text;
+  GtkWidget *remaining_text;
+  GtkWidget *remaining_box;
+  gboolean create_if_needed;
+} dt_splash_t;
 
 typedef struct darktable_t
 {
@@ -380,7 +449,7 @@ typedef struct darktable_t
   struct dt_bauhaus_t *bauhaus;
   const struct dt_database_t *db;
   const struct dt_pwstorage_t *pwstorage;
-  const struct dt_camctl_t *camctl;
+  struct dt_camctl_t *camctl;
   const struct dt_collection_t *collection;
   struct dt_selection_t *selection;
   struct dt_points_t *points;
@@ -396,6 +465,7 @@ typedef struct darktable_t
   dt_pthread_mutex_t capabilities_threadsafe;
   dt_pthread_mutex_t exiv2_threadsafe;
   dt_pthread_mutex_t readFile_mutex;
+  dt_pthread_mutex_t metadata_threadsafe;
   char *progname;
   char *datadir;
   char *sharedir;
@@ -422,6 +492,12 @@ typedef struct darktable_t
   struct dt_sys_resources_t dtresources;
   struct dt_backthumb_t backthumbs;
   struct dt_gimp_t gimp;
+  struct dt_splash_t splash;
+  int darkroom_active_imgid_rowid;
+#ifdef HAVE_AI
+  struct dt_ai_registry_t *ai_registry;
+  dt_ai_seg_t ai_seg;
+#endif
 } darktable_t;
 
 typedef struct
@@ -712,8 +788,7 @@ static inline size_t dt_get_num_threads()
 static inline size_t dt_get_num_procs()
 {
 #ifdef _OPENMP
-  // we can safely assume omp_get_num_procs is > 0
-  return (size_t)omp_get_num_procs();
+  return (size_t)MAX(1, omp_get_num_procs());
 #else
   return 1;
 #endif
@@ -729,6 +804,7 @@ static inline int dt_get_thread_num()
 }
 
 #define DT_INITHASH 5381
+#define DT_INVALID_HASH 0
 typedef uint64_t dt_hash_t;
 static inline dt_hash_t dt_hash(dt_hash_t hash, const void *data, const size_t size)
 {
@@ -887,8 +963,9 @@ static inline gboolean dt_slist_length_equal(GSList *l1, GSList *l2)
 // checks internally for DT_DEBUG_MEMORY
 void dt_print_mem_usage(char *info);
 
-// try to start the backthumbs crawler
-void dt_start_backtumbs_crawler();
+// start/stop the backthumbs crawler
+void dt_start_backthumbs_crawler(void);
+void dt_stop_backthumbs_crawler(const gboolean wait);
 
 void dt_configure_runtime_performance(const int version, char *config_info);
 // helper function which loads whatever image_to_load points to:
@@ -963,13 +1040,15 @@ static inline void dt_unreachable_codepath_with_caller(const char *description,
  * NQ_ should be used to strip any context from the string.
  */
 #undef NC_
-#define NC_(Context, String) (Context "|" String)
+#define NC_(Context, String) Context "|" String
 
 static inline const gchar *NQ_(const gchar *String)
 {
   const gchar *context_end = strchr(String, '|');
   return context_end ? context_end + 1 : String;
 }
+
+#define dt_buf_printf(buf, fmt, ...) (snprintf((buf), sizeof(buf), (fmt) __VA_OPT__(,) __VA_ARGS__), (buf))
 
 static inline gboolean dt_gimpmode(void)
 {
@@ -986,9 +1065,7 @@ static inline gboolean dt_check_gimpmode_ok(const char *mode)
   return darktable.gimp.mode ? !darktable.gimp.error && strcmp(darktable.gimp.mode, mode) == 0 : FALSE;
 }
 
-#ifdef __cplusplus
-} // extern "C"
-#endif /* __cplusplus */
+G_END_DECLS
 
 // clang-format off
 // modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py

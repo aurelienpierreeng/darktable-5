@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2010-2024 darktable developers.
+    Copyright (C) 2010-2026 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -16,7 +16,6 @@
     along with darktable.  If not, see <http://www.gnu.org/licenses/>.
 */
 #include "common/tags.h"
-#include "common/collection.h"
 #include "common/darktable.h"
 #include "common/debug.h"
 #include "common/grouping.h"
@@ -644,7 +643,8 @@ gboolean dt_tag_detach_by_string(const char *name,
      "SELECT tagid"
      " FROM main.tagged_images as ti, data.tags as t"
      " WHERE ti.tagid = t.id"
-     "   AND t.name GLOB ?1",
+     "   AND t.name GLOB ?1"
+     "   AND ti.imgid = ?2",
      -1, &stmt,
      NULL);
 
@@ -661,6 +661,7 @@ gboolean dt_tag_detach_by_string(const char *name,
   }
 
   DT_DEBUG_SQLITE3_BIND_TEXT(stmt, 1, n, -1, SQLITE_TRANSIENT);
+  DT_DEBUG_SQLITE3_BIND_INT(stmt, 2, imgid);
 
   gboolean res = FALSE;
 
@@ -670,6 +671,8 @@ gboolean dt_tag_detach_by_string(const char *name,
     const guint tagid = (guint)sqlite3_column_int(stmt, 0);
     dt_tag_detach(tagid, imgid, undo_on, group_on);
   }
+
+  sqlite3_finalize(stmt);
 
   g_free(n);
 
@@ -933,12 +936,12 @@ GList *dt_tag_get_list(const dt_imgid_t imgid)
   return dt_util_glist_uniq(tags);
 }
 
-GList *dt_tag_get_hierarchical(const dt_imgid_t imgid)
+GList *dt_tag_get_hierarchical(const dt_imgid_t imgid, const gboolean ignore_dt_tags)
 {
   GList *taglist = NULL;
   GList *tags = NULL;
 
-  const uint32_t count = dt_tag_get_attached(imgid, &taglist, FALSE);
+  const uint32_t count = dt_tag_get_attached(imgid, &taglist, ignore_dt_tags);
 
   if(count < 1)
     return NULL;
@@ -1005,6 +1008,40 @@ static gint _is_not_exportable_tag(gconstpointer a, gconstpointer b)
           ((ta->flags) & (DT_TF_CATEGORY | DT_TF_PRIVATE))) ? 0 : -1;
 }
 
+static gboolean _check_private_recursive(dt_tag_t *t)
+{
+  // travel up the tag hierarchy and check if we have a private category.
+  // if so, all tags within that category are treated as private.
+
+  if(t->flags & DT_TF_PRIVATE)
+    return TRUE;
+
+  gchar *tag = g_strdup(t->tag);
+  gboolean is_private = FALSE;
+
+  while(*tag && !is_private)
+  {
+    gchar *end = g_strrstr(tag, "|");
+    end = end? end : tag;
+    *end = '\0';
+
+    if(*tag)
+    {
+      // now we have the parent leave. Check if this is a private category
+      const uint32_t tagid = dt_tag_get_tag_id_by_name(tag);
+      if(tagid != 0)
+      {
+        const gint flags = dt_tag_get_flags(tagid);
+        is_private = (flags & (DT_TF_CATEGORY | DT_TF_PRIVATE)) == (DT_TF_CATEGORY | DT_TF_PRIVATE);
+      }
+    }
+  }
+
+  g_free(tag);
+
+  return is_private;
+}
+
 GList *dt_tag_get_list_export(const dt_imgid_t imgid,
                               const int32_t flags)
 {
@@ -1034,7 +1071,7 @@ GList *dt_tag_get_list_export(const dt_imgid_t imgid,
   for(; sorted_tags; sorted_tags = g_list_next(sorted_tags))
   {
     dt_tag_t *t = sorted_tags->data;
-    if((export_private_tags || !(t->flags & DT_TF_PRIVATE))
+    if((export_private_tags || !(_check_private_recursive(t)))
         && !(t->flags & DT_TF_CATEGORY))
     {
       gchar *tagname = t->leave;
@@ -1103,7 +1140,7 @@ GList *dt_tag_get_hierarchical_export(const dt_imgid_t imgid,
   for(GList *tag_iter = taglist; tag_iter; tag_iter = g_list_next(tag_iter))
   {
     dt_tag_t *t = tag_iter->data;
-    if(export_private_tags || !(t->flags & DT_TF_PRIVATE))
+    if(export_private_tags || !_check_private_recursive(t))
     {
       tags = g_list_prepend(tags, g_strdup(t->tag));
     }

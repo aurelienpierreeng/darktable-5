@@ -20,9 +20,7 @@
 
 #ifdef FULL_API_H
 
-#ifdef __cplusplus
-extern "C" {
-#endif
+G_BEGIN_DECLS
 
 #include <cairo/cairo.h>
 #include <glib.h>
@@ -60,6 +58,9 @@ OPTIONAL(int, button_pressed, struct dt_view_t *self, double x, double y, double
 OPTIONAL(void, configure, struct dt_view_t *self, int width, int height);
 OPTIONAL(void, scrolled, struct dt_view_t *self, double x, double y, int up, int state); // mouse scrolled in view
 OPTIONAL(void, scrollbar_changed, struct dt_view_t *self, double x, double y); // scrollbars changed in view
+OPTIONAL(gboolean, gesture_pan, struct dt_view_t *self, double x, double y, double dx, double dy, int state);
+OPTIONAL(gboolean, gesture_pinch, struct dt_view_t *self, double x, double y, double dx, double dy,
+                   int phase, double scale, int state); // x,y are root (screen-absolute) coords
 
 // list of mouse actions
 OPTIONAL(GSList *, mouse_actions, const struct dt_view_t *self);
@@ -68,9 +69,7 @@ OPTIONAL(GSList *, mouse_actions, const struct dt_view_t *self);
 
 #pragma GCC visibility pop
 
-#ifdef __cplusplus
-}
-#endif
+G_END_DECLS
 
 #endif // FULL_API_H
 
@@ -79,4 +78,3 @@ OPTIONAL(GSList *, mouse_actions, const struct dt_view_t *self);
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
 // clang-format on
-

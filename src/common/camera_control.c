@@ -1,6 +1,6 @@
 /*
    This file is part of darktable,
-   Copyright (C) 2010-2024 darktable developers.
+   Copyright (C) 2010-2026 darktable developers.
 
    darktable is free software: you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -16,9 +16,6 @@
    along with darktable.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-#ifdef HAVE_CONFIG_H
-#include "config.h"
-#endif
 #include "common/camera_control.h"
 #include "common/exif.h"
 #include "common/image.h"
@@ -30,6 +27,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <errno.h>
+#include <locale.h>
 
 /***/
 typedef enum _camctl_camera_job_type_t
@@ -161,7 +159,7 @@ static void _dispatch_camera_property_value_changed(const dt_camctl_t *c,
                                                     const char *value);
 
 /** Helper function to destroy a dt_camera_t object */
-static void dt_camctl_camera_destroy(dt_camera_t *cam);
+static void _camctl_camera_destroy(dt_camera_t *cam);
 
 static int logid = 0;
 
@@ -568,7 +566,7 @@ static void _camera_process_job(const dt_camctl_t *c,
 /* LIVE VIEW */
 /*************/
 
-static void *dt_camctl_camera_get_live_view(void *data)
+static void *_camctl_camera_get_live_view(void *data)
 {
   dt_camctl_t *camctl = (dt_camctl_t *)data;
   dt_camera_t *cam = (dt_camera_t *)camctl->active_camera;
@@ -636,7 +634,7 @@ gboolean dt_camctl_camera_start_live_view(const dt_camctl_t *c)
   dt_camctl_camera_set_property_int(camctl, NULL, "viewfinder", 1);
 
   dt_pthread_create(&cam->live_view_thread,
-                    &dt_camctl_camera_get_live_view, (void *)camctl);
+                    &_camctl_camera_get_live_view, (void *)camctl);
 
   return TRUE;
 }
@@ -654,7 +652,7 @@ void dt_camctl_camera_stop_live_view(const dt_camctl_t *c)
   }
   dt_print(DT_DEBUG_CAMCTL, "[camera_control] Stopping live view");
   cam->is_live_viewing = FALSE;
-  pthread_join(cam->live_view_thread, NULL);
+  dt_pthread_join(cam->live_view_thread);
   // tell camera to get back to normal state (close mirror)
   dt_camctl_camera_set_property_int(camctl, NULL, "eosviewfinder", 0);
   dt_camctl_camera_set_property_int(camctl, NULL, "viewfinder", 0);
@@ -685,9 +683,13 @@ static void _camctl_unlock(const dt_camctl_t *c)
   _dispatch_control_status(c, CAMERA_CONTROL_AVAILABLE);
 }
 
+static void *_update_cameras_thread(void *ptr);
 dt_camctl_t *dt_camctl_new()
 {
   dt_camctl_t *camctl = g_malloc0(sizeof(dt_camctl_t));
+  if(camctl == NULL)
+    return NULL;
+
   dt_print(DT_DEBUG_CAMCTL, "[camera_control] creating new context %p", camctl);
 
   // Initialize gphoto2 context and setup dispatch callbacks
@@ -711,10 +713,18 @@ dt_camctl_t *dt_camctl_new()
 
   dt_pthread_mutex_init(&camctl->lock, NULL);
   dt_pthread_mutex_init(&camctl->listeners_lock, NULL);
+
+  /* create thread taking care of connecting gphoto2 devices */
+  if(dt_control_running())
+  {
+    dt_control_t *control = darktable.control;
+    if(dt_pthread_create(&control->update_gphoto_thread, _update_cameras_thread, camctl))
+      dt_print(DT_DEBUG_ALWAYS, "could not start camera update thread");
+  }
   return camctl;
 }
 
-static void dt_camctl_camera_destroy_struct(dt_camera_t *cam)
+static void _camctl_camera_destroy_struct(dt_camera_t *cam)
 {
   if(!cam) return;
   if(cam->live_view_buffer)
@@ -732,7 +742,7 @@ static void dt_camctl_camera_destroy_struct(dt_camera_t *cam)
   g_free(cam);
 }
 
-static void dt_camctl_camera_destroy(dt_camera_t *cam)
+static void _camctl_camera_destroy(dt_camera_t *cam)
 {
   if(!cam) return;
   dt_print(DT_DEBUG_CAMCTL,
@@ -746,10 +756,10 @@ static void dt_camctl_camera_destroy(dt_camera_t *cam)
   gp_camera_exit(cam->gpcam, cam->gpcontext);
   gp_camera_unref(cam->gpcam);
   gp_widget_unref(cam->configuration);
-  dt_camctl_camera_destroy_struct(cam);
+  _camctl_camera_destroy_struct(cam);
 }
 
-static void dt_camctl_unused_camera_destroy(dt_camera_unused_t *cam)
+static void _camctl_unused_camera_destroy(dt_camera_unused_t *cam)
 {
   if(!cam) return;
   g_free(cam->model);
@@ -766,12 +776,12 @@ void dt_camctl_destroy(dt_camctl_t *camctl)
 
   for(GList *it = camctl->cameras; it; it = g_list_delete_link(it, it))
   {
-    dt_camctl_camera_destroy((dt_camera_t *)it->data);
+    _camctl_camera_destroy((dt_camera_t *)it->data);
   }
   // Go thru all c->unused_cameras and free them
   for(GList *itl = camctl->unused_cameras; itl; itl = g_list_delete_link(itl, itl))
   {
-    dt_camctl_unused_camera_destroy((dt_camera_unused_t *)itl->data);
+    _camctl_unused_camera_destroy((dt_camera_unused_t *)itl->data);
   }
   gp_context_unref(camctl->gpcontext);
   gp_abilities_list_free(camctl->gpcams);
@@ -837,13 +847,13 @@ static gboolean _have_camera_on_port(const dt_camera_unused_t *const testcam,
 static int cameras_cnt = -1;
 static int ports_cnt = -1;
 
-static gboolean dt_camctl_update_cameras(const dt_camctl_t *c)
+static gboolean _camctl_update_cameras(const dt_camctl_t *c)
 {
   dt_camctl_t *camctl = (dt_camctl_t *)c;
   if(!camctl) return FALSE;
 
   dt_pthread_mutex_lock(&camctl->lock);
-  gboolean changed_camera = FALSE;
+  camctl->changed_camera = FALSE;
 
   /* reload portdrivers */
   if(camctl->gpports) gp_port_info_list_free(camctl->gpports);
@@ -898,7 +908,7 @@ static gboolean dt_camctl_update_cameras(const dt_camctl_t *c)
       dt_print(DT_DEBUG_CAMCTL,
                "[camera_control] found new %s on port %s",
                testcam->model, testcam->port);
-      changed_camera = TRUE;
+      camctl->changed_camera = TRUE;
     }
     g_free(testcam);
   }
@@ -923,13 +933,13 @@ static gboolean dt_camctl_update_cameras(const dt_camctl_t *c)
       if(removed)
       {
         dt_print(DT_DEBUG_CAMCTL,
-                 "[camera_control] remove %s on port %s from ununsed camera list",
+                 "[camera_control] remove %s on port %s from unused camera list",
                  cam->model, cam->port);
         dt_camera_unused_t *oldcam = (dt_camera_unused_t *)unused_item->data;
         camctl->unused_cameras = unused_item =
           g_list_delete_link(c->unused_cameras, unused_item);
-        dt_camctl_unused_camera_destroy(oldcam);
-        changed_camera = TRUE;
+        _camctl_unused_camera_destroy(oldcam);
+        camctl->changed_camera = TRUE;
       }
       else
       {
@@ -977,16 +987,16 @@ static gboolean dt_camctl_update_cameras(const dt_camctl_t *c)
           }
           // Add to camera list
           camctl->cameras = g_list_append(camctl->cameras, camera);
-          changed_camera = TRUE;
+          camctl->changed_camera = TRUE;
 
           dt_print(DT_DEBUG_CAMCTL,
                    "[camera_control] remove %s on port %s from"
-                   " ununsed camera list as mounted",
+                   " unused camera list as mounted",
                    cam->model, cam->port);
           dt_camera_unused_t *oldcam = (dt_camera_unused_t *)unused_item->data;
           camctl->unused_cameras = unused_item =
             g_list_delete_link(c->unused_cameras, unused_item);
-          dt_camctl_unused_camera_destroy(oldcam);
+          _camctl_unused_camera_destroy(oldcam);
          // Notify listeners of connected camera
          _dispatch_camera_connected(camctl, camera);
         }
@@ -1022,8 +1032,8 @@ static gboolean dt_camctl_update_cameras(const dt_camctl_t *c)
                  cam->model, cam->port);
         dt_control_log(_("camera `%s' on port `%s' disconnected while mounted"),
                        cam->model, cam->port);
-        dt_camctl_camera_destroy_struct(oldcam);
-        changed_camera = TRUE;
+        _camctl_camera_destroy_struct(oldcam);
+        camctl->changed_camera = TRUE;
       }
       else if((cam->ptperror) || (cam->unmount))
       {
@@ -1039,59 +1049,46 @@ static gboolean dt_camctl_update_cameras(const dt_camctl_t *c)
 
         dt_camera_t *oldcam = (dt_camera_t *)citem->data;
         camctl->cameras = citem = g_list_delete_link(c->cameras, citem);
-        dt_camctl_camera_destroy(oldcam);
-        changed_camera = TRUE;
+        _camctl_camera_destroy(oldcam);
+        camctl->changed_camera = TRUE;
       }
     } while(citem && (citem = g_list_next(citem)) != NULL);
   }
 
   gp_list_unref(available_cameras);
 
+  camctl->import_ui = TRUE;
   dt_pthread_mutex_unlock(&camctl->lock);
   // tell the world that we are done. this assumes that there is just
   // one global camctl.  if there would ever be more it would be easy
   // to pass c with the signal.
-  if(changed_camera)
-    DT_CONTROL_SIGNAL_RAISE(DT_SIGNAL_CAMERA_DETECTED);
+  DT_CONTROL_SIGNAL_RAISE(DT_SIGNAL_CAMERA_DETECTED);
 
-  return changed_camera;
+  return camctl->changed_camera;
 }
 
-void *dt_update_cameras_thread(void *ptr)
+static void *_update_cameras_thread(void *ptr)
 {
   dt_pthread_setname("gphoto_update");
-  /* make sure control is up and running */
-  for(int k = 0; k < 100; k++)
-  {
-    if(dt_control_running()) break;
-    g_usleep(100000);
-  }
+  dt_camctl_t *camctl = (dt_camctl_t *)ptr;
   while(dt_control_running())
   {
-    dt_camctl_t *camctl = (dt_camctl_t *)darktable.camctl;
-
-    if(camctl)
-    {
-      if(camctl->import_ui == FALSE
+    if(camctl->import_ui == FALSE
          && dt_view_get_current() == DT_VIEW_LIGHTTABLE)
-//TODO:  && import module is expanded and visible
+    {
+      camctl->ticker += 1;
+      if((camctl->ticker & camctl->tickmask) == 0)
       {
-        camctl->ticker += 1;
-        if((camctl->ticker & camctl->tickmask) == 0)
-        {
-          // we've rolled over the current scan interval, so check for
-          // new/removed cameras and decide how long to wait until the
-          // next scan based on the result: one second if there was a
-          // change, eight seconds if not
-          camctl->tickmask = (dt_camctl_update_cameras(camctl)) ? 0x03 : 0x1F;
-        }
+        // we've rolled over the current scan interval, so check for
+        // new/removed cameras and decide how long to wait until the
+        // next scan based on the result: one second if there was a
+        // change, eight seconds if not
+        camctl->tickmask = _camctl_update_cameras(camctl) ? 0x03 : 0x1F;
       }
-      else
-        camctl->tickmask = 3; // want to be responsive right after
-                              // other modes are done - scan in one
-                              // second
-    g_usleep(250000);  // 1/4 second
     }
+    else
+      camctl->tickmask = 3; // want to be responsive in one sec right after other modes are done
+    g_usleep(250000);  // 1/4 second
   }
   return 0;
 }
@@ -1193,8 +1190,37 @@ static gboolean _camera_initialize(const dt_camctl_t *c,
       return FALSE;
     }
 
+    // Calling gp_camera_get_config can cause a crash (seen with
+    // libgphoto2 2.5.31) due to a stack smashing when working with
+    // some specific locales. At least this was seen with Ukrainian
+    // and Czech locales. This is clearly a bug in libgphoto2, which
+    // we will have to work around by temporarily switching to a safe
+    // locale. Note that for safety we should either use thread-safe
+    // functions (newlocale/uselocale), or this locale switching should
+    // be for the current thread only (on Windows where there is no
+    // implementation of newlocale/uselocale).
+#if defined(WIN32)
+    char *locale = strdup(setlocale(LC_ALL, NULL));
+    _configthreadlocale(_ENABLE_PER_THREAD_LOCALE);
+    setlocale(LC_ALL, "C");
+#else
+    locale_t nlocale = newlocale(LC_ALL_MASK, "C", (locale_t) 0);
+    locale_t locale = uselocale(nlocale);
+#endif
     // read a full copy of config to configuration cache
     gp_camera_get_config(cam->gpcam, &cam->configuration, c->gpcontext);
+
+#if defined(WIN32)
+    if(locale)
+    {
+      setlocale(LC_ALL, locale);
+      free(locale);
+    }
+    _configthreadlocale(_DISABLE_PER_THREAD_LOCALE);
+#else
+    uselocale(locale);
+    freelocale(nlocale);
+#endif
 
     // TODO: find a more robust way for this, once we find out how to do it with non-EOS cameras
     cam->can_live_view_advanced =
@@ -1230,7 +1256,11 @@ void dt_camctl_import(const dt_camctl_t *c,
                       const dt_camera_t *cam,
                       GList *images)
 {
-  GList *ifiles = g_list_sort(images, (GCompareFunc)_sort_filename);
+  // Copy the list structure first. g_list_sort sorts in-place and modifies the list nodes,
+  // which would change the head pointer seen by the caller (params->images).
+  // Copying preserves the original list structure so the caller can successfully free it.
+  GList *ifiles = g_list_copy(images);
+  ifiles = g_list_sort(ifiles, (GCompareFunc)_sort_filename);
   char *prev_file = NULL;
   char *prev_output = NULL;
 
@@ -1314,6 +1344,11 @@ void dt_camctl_import(const dt_camctl_t *c,
     prev_file = file;
   }
   g_free(prev_output);
+
+  // Free only the copied list nodes. The actual filename strings are still owned
+  // by the original list 'images' and will be freed by the caller's cleanup handler.
+  // Using g_list_free_full here would result in a use-after-free or double-free.
+  g_list_free(ifiles);
 
   _dispatch_control_status(c, CAMERA_CONTROL_AVAILABLE);
   _camctl_unlock(c);
@@ -1680,7 +1715,7 @@ static void _camera_build_property_menu(CameraWidget *widget,
           /* construct menu item for property */
           gp_widget_get_name(child, &sk);
           GtkMenuItem *item = GTK_MENU_ITEM(gtk_menu_item_new_with_label(sk));
-          g_signal_connect(G_OBJECT(item), "activate", item_activate, user_data);
+          g_signal_connect(G_OBJECT(item), "activate", G_CALLBACK(item_activate), user_data);
           /* add submenu item to menu */
           gtk_menu_shell_append(GTK_MENU_SHELL(menu), GTK_WIDGET(item));
         }
@@ -2065,20 +2100,20 @@ static void _camera_poll_events(const dt_camctl_t *c,
            "[camera_control] Camera configuration change event '%s', lets update internal "
            "configuration cache", (char*)data);
         // Update individual properties with gp_camera_get_single_config
-        if (strstr((char*)data, "PTP Property") && strstr((char*)data, "changed"))
+        if(strstr((char*)data, "PTP Property") && strstr((char*)data, "changed"))
         {
           // Use the property name if provided (GUI elements use this
           // name and won't update if the numeric code is used
           // instead)
-          if (strstr((char*)data, "changed,"))
+          if(strstr((char*)data, "changed,"))
           {
             char * nameStart = strchr(data + strlen("PTP Property "), '"');
-            if (nameStart != NULL)
+            if(nameStart != NULL)
             {
               // Skip quotation marks
               nameStart += 1;
               const char *nameEnd = strchr(nameStart, '"');
-              if (nameEnd != NULL)
+              if(nameEnd != NULL)
               {
                 char *name = g_try_malloc0(nameEnd - nameStart + 1);
                 if(name)
@@ -2259,7 +2294,7 @@ static void _camera_configuration_single_update(const dt_camctl_t *c,
   dt_camera_t *cam = (dt_camera_t *)camera;
   dt_pthread_mutex_lock(&cam->config_lock);
   CameraWidget *remote;
-  if (gp_camera_get_single_config(camera->gpcam, name, &remote, c->gpcontext) != GP_OK)
+  if(gp_camera_get_single_config(camera->gpcam, name, &remote, c->gpcontext) != GP_OK)
   {
     dt_print(DT_DEBUG_CAMCTL,
              "[camera_control] failed to get config value for property %s", name);

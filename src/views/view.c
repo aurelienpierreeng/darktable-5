@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2009-2024 darktable developers.
+    Copyright (C) 2009-2025 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -85,19 +85,13 @@ void dt_view_manager_init(dt_view_manager_t *vm)
                               "   AND id != ?2",
                               -1, &vm->statements.get_grouped, NULL);
 
+  vm->module_toolbox = dt_gui_hbox();
+  vm->view_toolbox = dt_gui_hbox();
+
   dt_view_manager_load_modules(vm);
 
   vm->current_view = NULL;
   vm->audio.audio_player_id = -1;
-}
-
-void dt_view_manager_gui_init(dt_view_manager_t *vm)
-{
-  for(GList *iter = vm->views; iter; iter = g_list_next(iter))
-  {
-    dt_view_t *view = iter->data;
-    if(view->gui_init) view->gui_init(view);
-  }
 }
 
 void dt_view_manager_cleanup(dt_view_manager_t *vm)
@@ -111,7 +105,7 @@ void dt_view_manager_cleanup(dt_view_manager_t *vm)
   vm->views = NULL;
 }
 
-const dt_view_t *dt_view_manager_get_current_view(dt_view_manager_t *vm)
+const dt_view_t *dt_view_manager_get_current_view(const dt_view_manager_t *vm)
 {
   return vm->current_view;
 }
@@ -187,6 +181,7 @@ static int dt_view_load_module(void *v,
                                      module->module_name,
                                      module->name(module) };
     dt_action_insert_sorted(&darktable.control->actions_views, &module->actions);
+    if(module->gui_init) module->gui_init(module);
   }
 
   return 0;
@@ -202,9 +197,12 @@ static void dt_view_unload_module(dt_view_t *view)
     g_module_close(view->module);
 }
 
-void dt_vm_remove_child(GtkWidget *widget, gpointer data)
+static void _show_hide_toolbox_widget(GtkWidget *widget,
+                                      gpointer data)
 {
-  gtk_container_remove(GTK_CONTAINER(data), widget);
+  gtk_widget_set_no_show_all(widget, TRUE);
+  gtk_widget_set_visible(widget,
+    GPOINTER_TO_INT(g_object_get_data(G_OBJECT(widget), "views")) & GPOINTER_TO_INT(data));
 }
 
 gboolean dt_view_manager_switch(dt_view_manager_t *vm,
@@ -243,9 +241,6 @@ gboolean dt_view_manager_switch_by_view(dt_view_manager_t *vm,
       && dt_check_gimpmode("file")
       && dt_view_get_current() == DT_VIEW_DARKROOM)
     return FALSE;
-
-  // reset the cursor to the default one
-  dt_control_change_cursor(GDK_LEFT_PTR);
 
   dt_set_backthumb_time(0.0);
 
@@ -308,6 +303,10 @@ gboolean dt_view_manager_switch_by_view(dt_view_manager_t *vm,
     }
   }
 
+  // show we are busy changing views
+  dt_control_change_cursor("wait");
+  gdk_display_sync(gdk_display_get_default());
+
   /* cleanup current view before initialization of new  */
   if(old_view)
   {
@@ -325,7 +324,7 @@ gboolean dt_view_manager_switch_by_view(dt_view_manager_t *vm,
       if(new_view == old_view && !plugin->expandable(plugin)) continue;
 
       /* does this module belong to current view ?*/
-      GtkWidget *ppw = plugin->expander ?: plugin->widget;
+      GtkWidget *ppw = plugin->expander ? plugin->expander : plugin->widget;
       if(ppw && gtk_widget_get_ancestor(ppw, GTK_TYPE_WINDOW))
       {
         if(plugin->view_leave)
@@ -345,6 +344,28 @@ gboolean dt_view_manager_switch_by_view(dt_view_manager_t *vm,
   }
 
   /* change current view to the new view */
+
+  /*
+     Race Condition
+
+     the current view is set to the new view prior to
+     initializing.  Plugins are initialized according to
+     the current view, so it must be set prior.
+
+     If a Lua script tries to register a lib, it checks the
+     current view to see if is lighttable.  If the current
+     view is lighttable then the lib tries to install.
+
+     If the current view is set to lighttable, but the
+     view hasn't completely initialized, and Lua attempts
+     to install the lib the result will be a hang.
+
+     There is a work around in the Lua initialization code,
+     data/luarc, to check that the initialization is complete
+     and set a flag, darktable_gui_safe, when it is safe to
+     register libs
+  */
+
   vm->current_view = new_view;
 
   dt_view_type_flags_t view_type = new_view->view(new_view);
@@ -381,7 +402,7 @@ gboolean dt_view_manager_switch_by_view(dt_view_manager_t *vm,
       char var[1024];
       snprintf(var, sizeof(var), "plugins/%s/%s/expanded",
                new_view->module_name, plugin->plugin_name);
-      gboolean expanded = dt_conf_get_bool(var);
+      const gboolean expanded = dt_conf_get_bool(var);
       dt_lib_gui_set_expanded(plugin, expanded);
       dt_lib_set_visible(plugin, TRUE);
     }
@@ -405,8 +426,9 @@ gboolean dt_view_manager_switch_by_view(dt_view_manager_t *vm,
     if(!strcmp(plugin->plugin_name,"module_toolbox")
       || !strcmp(plugin->plugin_name,"view_toolbox"))
     {
+      gtk_container_foreach(GTK_CONTAINER(w), _show_hide_toolbox_widget, GINT_TO_POINTER(view_type));
       if(view_type == DT_VIEW_LIGHTTABLE)
-                       dt_gui_add_help_link(w, "lighttable_mode");
+        dt_gui_add_help_link(w, "lighttable_mode");
       if(view_type == DT_VIEW_DARKROOM)
         dt_gui_add_help_link(w, "darkroom_bottom_panel");
     }
@@ -438,10 +460,14 @@ gboolean dt_view_manager_switch_by_view(dt_view_manager_t *vm,
 
   // update toast visibility
   DT_CONTROL_SIGNAL_RAISE(DT_SIGNAL_CONTROL_TOAST_REDRAW);
+
+  // reset the cursor to the default one
+  dt_control_change_cursor("default");
+
   return FALSE;
 }
 
-const char *dt_view_manager_name(dt_view_manager_t *vm)
+const char *dt_view_manager_name(const dt_view_manager_t *vm)
 {
   if(!vm->current_view)
     return "";
@@ -665,6 +691,50 @@ void dt_view_manager_scrolled(dt_view_manager_t *vm,
     vm->current_view->scrolled(vm->current_view, x, y, up, state);
 }
 
+gboolean dt_view_manager_gesture_pan(dt_view_manager_t *vm,
+                                     const double x,
+                                     const double y,
+                                     const double dx,
+                                     const double dy,
+                                     const int state)
+{
+  if(!vm->current_view)
+  {
+    return FALSE;
+  }
+  else if(vm->current_view->gesture_pan)
+  {
+    return vm->current_view->gesture_pan(vm->current_view, x, y, dx, dy, state);
+  }
+  else
+  {
+    return FALSE;
+  }
+}
+
+gboolean dt_view_manager_gesture_pinch(dt_view_manager_t *vm,
+                                       const double x,
+                                       const double y,
+                                       const double dx,
+                                       const double dy,
+                                       const int phase,
+                                       const double scale,
+                                       const int state)
+{
+  if(!vm->current_view)
+  {
+    return FALSE;
+  }
+  else if(vm->current_view->gesture_pinch)
+  {
+    return vm->current_view->gesture_pinch(vm->current_view, x, y, dx, dy, phase, scale, state);
+  }
+  else
+  {
+    return FALSE;
+  }
+}
+
 void dt_view_manager_scrollbar_changed(dt_view_manager_t *vm,
                                        const double x,
                                        const double y)
@@ -709,6 +779,17 @@ dt_view_surface_value_t dt_view_image_get_surface(const dt_imgid_t imgid,
                                                   cairo_surface_t **surface,
                                                   const gboolean quality)
 {
+  return dt_view_image_get_surface_cached(imgid, width, height, surface, quality, NULL, NULL);
+}
+
+dt_view_surface_value_t dt_view_image_get_surface_cached(const dt_imgid_t imgid,
+                                                         const int32_t width,
+                                                         const int32_t height,
+                                                         cairo_surface_t **surface,
+                                                         const gboolean quality,
+                                                         cairo_surface_t **mip_cache,
+                                                         dt_mipmap_size_t *mip_cache_level)
+{
   const double tt = dt_get_debug_wtime();
 
   dt_view_surface_value_t ret = DT_VIEW_SURFACE_KO;
@@ -720,26 +801,71 @@ dt_view_surface_value_t dt_view_image_get_surface(const dt_imgid_t imgid,
   *surface = NULL;
 
   // get mipmap cache image
-  dt_mipmap_cache_t *cache = darktable.mipmap_cache;
   const int32_t mipwidth = width * darktable.gui->ppd;
   const int32_t mipheight = height * darktable.gui->ppd;
-  dt_mipmap_size_t mip = dt_mipmap_cache_get_matching_size(cache, mipwidth, mipheight);
+  dt_mipmap_size_t mip = dt_mipmap_cache_get_matching_size(mipwidth, mipheight);
+
+  // Fast path: if the caller provides a cached native-resolution surface for
+  // this exact mip level, skip the expensive mipmap fetch + color conversion
+  // and just rescale the existing cached surface.
+  if(mip_cache && *mip_cache && mip_cache_level && *mip_cache_level == mip
+     && cairo_surface_status(*mip_cache) == CAIRO_STATUS_SUCCESS)
+  {
+    const int32_t cached_wd = cairo_image_surface_get_width(*mip_cache);
+    const int32_t cached_ht = cairo_image_surface_get_height(*mip_cache);
+    if(cached_wd > 0 && cached_ht > 0)
+    {
+      float scale = fminf(width / (float)cached_wd,
+                          height / (float)cached_ht) * darktable.gui->ppd_thb;
+      const int32_t img_width  = roundf(cached_wd * scale);
+      const int32_t img_height = roundf(cached_ht * scale);
+      scale = fmaxf(img_width / (float)cached_wd, img_height / (float)cached_ht);
+      *surface = cairo_image_surface_create(CAIRO_FORMAT_RGB24, img_width, img_height);
+      if(*surface && cairo_surface_status(*surface) == CAIRO_STATUS_SUCCESS)
+      {
+        cairo_t *cr = cairo_create(*surface);
+        cairo_scale(cr, scale, scale);
+        cairo_set_source_surface(cr, *mip_cache, 0, 0);
+        // Match the filter logic of the full path below: at a 1:1 mapping
+        // (scale ~ 1.0, i.e. a true 100% view) use NEAREST so we display the
+        // cached native pixels exactly, pixel-for-pixel, rather than softening
+        // them with interpolation.  The cached surface always corresponds to
+        // the exact mip (we only cache when mip == buf.size && buf_wd > 30), so
+        // the skull/fallback branches of the full path can't apply here.
+        if(fabsf(scale - 1.0f) < 0.01f)
+          cairo_pattern_set_filter(cairo_get_source(cr), CAIRO_FILTER_NEAREST);
+        else
+          cairo_pattern_set_filter(cairo_get_source(cr),
+                                   ((darktable.gui->filter_image == CAIRO_FILTER_FAST)
+                                    && quality)
+                                   ? CAIRO_FILTER_GOOD
+                                   : darktable.gui->filter_image);
+        cairo_paint(cr);
+        cairo_destroy(cr);
+        return DT_VIEW_SURFACE_OK;
+      }
+      // Surface creation failed; fall through to the full path below.
+      if(*surface && cairo_surface_get_reference_count(*surface) > 0)
+        cairo_surface_destroy(*surface);
+      *surface = NULL;
+    }
+  }
 
   // if needed, we load the mimap buffer
   dt_mipmap_buffer_t buf;
-  dt_mipmap_cache_get(cache, &buf, imgid, mip, DT_MIPMAP_BEST_EFFORT, 'r');
+  dt_mipmap_cache_get(&buf, imgid, mip, DT_MIPMAP_BEST_EFFORT, 'r');
 
   const int32_t buf_wd = buf.width;
   const int32_t buf_ht = buf.height;
 
   dt_print(DT_DEBUG_LIGHTTABLE,
       "dt_view_image_get_surface  id %i, dots %ix%i -> mip %ix%i, found %ix%i",
-      imgid, mipwidth, mipheight, cache->max_width[mip], cache->max_height[mip], buf_wd, buf_ht);
+      imgid, mipwidth, mipheight, darktable.mipmap_cache->max_width[mip], darktable.mipmap_cache->max_height[mip], buf_wd, buf_ht);
 
   // no image is available at the moment as we didn't get buffer data
   if(!buf.buf)
   {
-    dt_mipmap_cache_release(darktable.mipmap_cache, &buf);
+    dt_mipmap_cache_release(&buf);
     return DT_VIEW_SURFACE_KO;
   }
 
@@ -785,7 +911,7 @@ dt_view_surface_value_t dt_view_image_get_surface(const dt_imgid_t imgid,
         {
           dt_print(DT_DEBUG_ALWAYS,
                   "oops, there seems to be a code path not setting the"
-                  " color space of thumbnails!\n");
+                  " color space of thumbnails!");
         }
         else if(buf.color_space != DT_COLORSPACE_DISPLAY
                 && buf.color_space != DT_COLORSPACE_DISPLAY2)
@@ -869,6 +995,42 @@ dt_view_surface_value_t dt_view_image_get_surface(const dt_imgid_t imgid,
 
     cairo_surface_destroy(tmp_surface);
     cairo_destroy(cr);
+
+    // Cache the native-resolution surface so future zoom events at the
+    // same mip level can skip the expensive mipmap fetch + color conversion.
+    // Only cache when we have the exact mip (not a fallback standin) and
+    // the image is not a skull/error placeholder.
+    if(mip_cache && mip == buf.size && buf_wd > 30)
+    {
+      if(*mip_cache && cairo_surface_get_reference_count(*mip_cache) > 0)
+        cairo_surface_destroy(*mip_cache);
+      *mip_cache = cairo_image_surface_create(CAIRO_FORMAT_RGB24, buf_wd, buf_ht);
+      if(*mip_cache && cairo_surface_status(*mip_cache) == CAIRO_STATUS_SUCCESS)
+      {
+        // Reconstruct the tmp_surface content from rgbbuf into the cached surface.
+        // We use create_for_data here (cheap, no extra alloc) since rgbbuf is still
+        // live at this point.
+        const int32_t cache_stride = cairo_format_stride_for_width(CAIRO_FORMAT_RGB24, buf_wd);
+        cairo_surface_t *src = cairo_image_surface_create_for_data(
+            rgbbuf, CAIRO_FORMAT_RGB24, buf_wd, buf_ht, cache_stride);
+        if(src && cairo_surface_status(src) == CAIRO_STATUS_SUCCESS)
+        {
+          cairo_t *cr_cache = cairo_create(*mip_cache);
+          cairo_set_source_surface(cr_cache, src, 0, 0);
+          cairo_pattern_set_filter(cairo_get_source(cr_cache), CAIRO_FILTER_NEAREST);
+          cairo_paint(cr_cache);
+          cairo_destroy(cr_cache);
+          cairo_surface_destroy(src);
+        }
+        else
+        {
+          if(src) cairo_surface_destroy(src);
+          cairo_surface_destroy(*mip_cache);
+          *mip_cache = NULL;
+        }
+      }
+      if(mip_cache_level) *mip_cache_level = mip;
+    }
   }
 
   // we consider skull/error as ok as the image hasn't to be reload
@@ -879,7 +1041,7 @@ dt_view_surface_value_t dt_view_image_get_surface(const dt_imgid_t imgid,
   else
     ret = DT_VIEW_SURFACE_OK;
 
-  dt_mipmap_cache_release(darktable.mipmap_cache, &buf);
+  dt_mipmap_cache_release(&buf);
   if(rgbbuf) free(rgbbuf);
 
   // logs
@@ -1090,7 +1252,7 @@ void dt_view_active_images_reset(const gboolean raise)
   if(raise)
     DT_CONTROL_SIGNAL_RAISE(DT_SIGNAL_ACTIVE_IMAGES_CHANGE);
 }
-void dt_view_active_images_add(dt_imgid_t imgid, gboolean raise)
+void dt_view_active_images_add(const dt_imgid_t imgid, const gboolean raise)
 {
   darktable.view_manager->active_images =
     g_slist_append(darktable.view_manager->active_images, GINT_TO_POINTER(imgid));
@@ -1106,19 +1268,19 @@ void dt_view_manager_view_toolbox_add(dt_view_manager_t *vm,
                                       GtkWidget *tool,
                                       const dt_view_type_flags_t views)
 {
-  if(vm->proxy.view_toolbox.module)
-    vm->proxy.view_toolbox.add(vm->proxy.view_toolbox.module, tool, views);
+  g_object_set_data(G_OBJECT(tool), "views", GINT_TO_POINTER(views));
+  dt_gui_box_add(vm->view_toolbox, tool);
 }
 
 void dt_view_manager_module_toolbox_add(dt_view_manager_t *vm,
                                         GtkWidget *tool,
                                         const dt_view_type_flags_t views)
 {
-  if(vm->proxy.module_toolbox.module)
-    vm->proxy.module_toolbox.add(vm->proxy.module_toolbox.module, tool, views);
+  g_object_set_data(G_OBJECT(tool), "views", GINT_TO_POINTER(views));
+  dt_gui_box_add(vm->module_toolbox, tool);
 }
 
-dt_darkroom_layout_t dt_view_darkroom_get_layout(dt_view_manager_t *vm)
+dt_darkroom_layout_t dt_view_darkroom_get_layout(const dt_view_manager_t *vm)
 {
   if(vm->proxy.darkroom.view)
     return vm->proxy.darkroom.get_layout(vm->proxy.darkroom.view);
@@ -1133,7 +1295,7 @@ void dt_view_lighttable_set_zoom(dt_view_manager_t *vm,
     vm->proxy.lighttable.set_zoom(vm->proxy.lighttable.module, zoom);
 }
 
-gint dt_view_lighttable_get_zoom(dt_view_manager_t *vm)
+gint dt_view_lighttable_get_zoom(const dt_view_manager_t *vm)
 {
   if(vm->proxy.lighttable.module)
     return vm->proxy.lighttable.get_zoom(vm->proxy.lighttable.module);
@@ -1141,21 +1303,17 @@ gint dt_view_lighttable_get_zoom(dt_view_manager_t *vm)
     return 10;
 }
 
-void dt_view_lighttable_culling_init_mode(dt_view_manager_t *vm)
-{
-  if(vm->proxy.lighttable.module)
-    vm->proxy.lighttable.culling_init_mode(vm->proxy.lighttable.view);
-}
-
 void dt_view_lighttable_culling_preview_refresh(dt_view_manager_t *vm)
 {
-  if(vm->proxy.lighttable.module)
+  if(vm->proxy.lighttable.module
+     && vm->proxy.lighttable.culling_preview_refresh)
     vm->proxy.lighttable.culling_preview_refresh(vm->proxy.lighttable.view);
 }
 
 void dt_view_lighttable_culling_preview_reload_overlays(dt_view_manager_t *vm)
 {
-  if(vm->proxy.lighttable.module)
+  if(vm->proxy.lighttable.module
+    && vm->proxy.lighttable.culling_preview_reload_overlays)
     vm->proxy.lighttable.culling_preview_reload_overlays(vm->proxy.lighttable.view);
 }
 
@@ -1165,6 +1323,43 @@ dt_lighttable_layout_t dt_view_lighttable_get_layout(dt_view_manager_t *vm)
     return vm->proxy.lighttable.get_layout(vm->proxy.lighttable.module);
   else
     return DT_LIGHTTABLE_LAYOUT_FILEMANAGER;
+}
+
+void dt_view_lighttable_update_layout_buttons(dt_view_manager_t *vm)
+{
+  if(vm->proxy.lighttable.module)
+    vm->proxy.lighttable.update_layout_btn(vm->proxy.lighttable.module);
+}
+
+dt_lighttable_culling_restriction_t dt_view_lighttable_culling_initial_restriction(dt_view_manager_t *vm)
+{
+  if(vm->proxy.lighttable.module)
+    return vm->proxy.lighttable.get_culling_initial_restriction(vm->proxy.lighttable.module);
+  else
+    return FALSE;
+}
+
+dt_lighttable_culling_restriction_t dt_view_lighttable_culling_restricted_state(dt_view_manager_t *vm)
+{
+  if(vm->proxy.lighttable.view)
+    return vm->proxy.lighttable.get_culling_restricted_state(vm->proxy.lighttable.view);
+  else
+    return FALSE;
+}
+
+void dt_view_lighttable_set_culling_restricted_state(dt_view_manager_t *vm,
+                                                     const dt_lighttable_culling_restriction_t state)
+{
+  if(vm->proxy.lighttable.view)
+    vm->proxy.lighttable.set_culling_restricted_state(vm->proxy.lighttable.view, state);
+}
+
+dt_imgid_t dt_view_lighttable_get_culling_selection(dt_view_manager_t *vm)
+{
+  if(vm->proxy.lighttable.module)
+    return vm->proxy.lighttable.get_culling_selection(vm->proxy.lighttable.view);
+  else
+    return NO_IMGID;
 }
 
 gboolean dt_view_lighttable_preview_state(dt_view_manager_t *vm)
@@ -1178,17 +1373,18 @@ gboolean dt_view_lighttable_preview_state(dt_view_manager_t *vm)
 void dt_view_lighttable_set_preview_state(dt_view_manager_t *vm,
                                           const gboolean state,
                                           const gboolean sticky,
-                                          const gboolean focus)
+                                          const gboolean focus,
+                                          const dt_lighttable_culling_restriction_t restriction)
 {
   if(vm->proxy.lighttable.module)
-    vm->proxy.lighttable.set_preview_state(vm->proxy.lighttable.view, state, sticky, focus);
+    vm->proxy.lighttable.set_preview_state(vm->proxy.lighttable.view, state, sticky, focus, restriction);
 }
 
 void dt_view_lighttable_change_offset(dt_view_manager_t *vm,
                                       const gboolean reset,
                                       const dt_imgid_t imgid)
 {
-  if(vm->proxy.lighttable.module)
+  if(vm && vm->proxy.lighttable.module)
     vm->proxy.lighttable.change_offset(vm->proxy.lighttable.view, reset, imgid);
 }
 
@@ -1406,7 +1602,6 @@ static void _accels_window_destroy(GtkWidget *widget, dt_view_manager_t *vm)
 }
 
 static void _accels_window_sticky(GtkWidget *widget,
-                                  GdkEventButton *event,
                                   dt_view_manager_t *vm)
 {
   if(!vm->accels_window.window) return;
@@ -1449,8 +1644,6 @@ void dt_view_accels_show(dt_view_manager_t *vm)
 #endif
   dt_gui_add_class(vm->accels_window.window, "dt_accels_window");
 
-  GtkWidget *sw = gtk_scrolled_window_new(NULL, NULL);
-
   GtkWidget *hb = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 5);
 
   vm->accels_window.flow_box = gtk_flow_box_new();
@@ -1464,7 +1657,7 @@ void dt_view_accels_show(dt_view_manager_t *vm)
   vm->accels_window.sticky_btn = dtgtk_button_new(dtgtk_cairo_paint_multiinstance, 0, NULL);
   gtk_widget_set_tooltip_text(vm->accels_window.sticky_btn,
                               _("switch to a classic window which will stay open after key release"));
-  g_signal_connect(G_OBJECT(vm->accels_window.sticky_btn), "button-press-event",
+  g_signal_connect(G_OBJECT(vm->accels_window.sticky_btn), "clicked",
                    G_CALLBACK(_accels_window_sticky),
                    vm);
   dt_gui_add_class(vm->accels_window.sticky_btn, "dt_accels_stick");
@@ -1475,10 +1668,9 @@ void dt_view_accels_show(dt_view_manager_t *vm)
 
   GtkAllocation alloc;
   gtk_widget_get_allocation(dt_ui_main_window(darktable.gui->ui), &alloc);
-  // gtk_scrolled_window_set_min_content_height(GTK_SCROLLED_WINDOW(sw), alloc.height);
+  GtkWidget *sw = dt_gui_scroll_wrap(hb);
   gtk_scrolled_window_set_max_content_height(GTK_SCROLLED_WINDOW(sw), alloc.height);
   gtk_scrolled_window_set_max_content_width(GTK_SCROLLED_WINDOW(sw), alloc.width);
-  gtk_container_add(GTK_CONTAINER(sw), hb);
   gtk_container_add(GTK_CONTAINER(vm->accels_window.window), sw);
 
   gtk_window_set_resizable(GTK_WINDOW(vm->accels_window.window), FALSE);
@@ -1653,6 +1845,35 @@ void dt_view_audio_stop(dt_view_manager_t *vm)
   vm->audio.audio_player_id = -1;
 }
 
+static void _match_rotation(cairo_t *cr,
+                            dt_dev_zoom_pos_t d,
+                            double dx,
+                            double dy,
+                            const double cx,
+                            const double cy)
+{
+  const double xx = d[2] - d[0];
+  const double yx = d[3] - d[1];
+  const double xy = d[4] - d[0];
+  const double yy = d[5] - d[1];
+
+  if(fabs(xx * yy - xy * yx) < 1e-10)
+    return;
+
+  const double sx = hypot(xx, yx);
+  const double sy = hypot(xy, yy);
+  cairo_matrix_t matrix;
+  cairo_matrix_init(&matrix, xx / sx, yx / sx, xy / sy, yy / sy, 0, 0);
+  cairo_transform(cr, &matrix);
+
+  dx += 0.5 * cx;
+  dy += 0.5 * cy;
+
+  cairo_matrix_invert(&matrix);
+  cairo_matrix_transform_point(&matrix, &dx, &dy);
+  cairo_translate(cr, dx - 0.5 * cx, dy - 0.5 * cy);
+}
+
 void dt_view_paint_surface(cairo_t *cr,
                            const size_t width,
                            const size_t height,
@@ -1662,31 +1883,36 @@ void dt_view_paint_surface(cairo_t *cr,
                            float buf_scale,
                            int buf_width,
                            int buf_height,
-                           float buf_zoom_x,
-                           float buf_zoom_y)
+                           dt_dev_zoom_pos_t buf_zoom_pos)
 {
-  dt_develop_t *dev = darktable.develop;
-
-  float pts[] = { buf_zoom_x, buf_zoom_y,
-                  dev->preview_pipe->backbuf_zoom_x, dev->preview_pipe->backbuf_zoom_y };
-  dt_dev_distort_transform_plus(dev, port->pipe, 0.0f, DT_DEV_TRANSFORM_DIR_ALL, pts, 2);
+  // Use the viewport's develop if available, otherwise fall back to global
+  dt_develop_t *dev = port->dev ? port->dev : darktable.develop;
+  // Preview pipe for fallback rendering - only available for main develop
+  dt_dev_pixelpipe_t *pp = darktable.develop->preview_pipe;
 
   int processed_width, processed_height;
   dt_dev_get_processed_size(port, &processed_width, &processed_height);
+  if(!processed_width || !processed_height)
+    return;
 
-  float offset_x = pts[0] / processed_width - 0.5f;
-  float offset_y = pts[1] / processed_height - 0.5f;
-  float preview_x = pts[2] / processed_width - 0.5f;
-  float preview_y = pts[3] / processed_height - 0.5f;
+  float pts[14];
+  memcpy(pts, buf_zoom_pos, sizeof(dt_dev_zoom_pos_t));
+  memcpy(pts + 6, pp->backbuf_zoom_pos, sizeof(dt_dev_zoom_pos_t));
+  pts[12] = port->zoom_x; pts[13] = port->zoom_y;
+  dt_dev_distort_transform_plus(dev, port->pipe, 0.0f, DT_DEV_TRANSFORM_DIR_ALL_GEOMETRY, pts, 7);
 
-  dt_dev_zoom_t zoom;
-  int closeup;
-  float zoom_x, zoom_y;
-  dt_dev_get_viewport_params(port, &zoom, &closeup, &zoom_x, &zoom_y);
+  const float offset_x  = pts[0] / processed_width  - 0.5f;
+  const float offset_y  = pts[1] / processed_height - 0.5f;
+  const float preview_x = pts[6] / processed_width  - 0.5f;
+  const float preview_y = pts[7] / processed_height - 0.5f;
+  const float zoom_x    = pts[12]/ processed_width  - 0.5f;
+  const float zoom_y    = pts[13]/ processed_height - 0.5f;
 
+  const dt_dev_zoom_t zoom = port->zoom;
+  const int closeup = port->closeup;
   const float ppd           = port->ppd;
   const double tb           = port->border_size;
-  const float zoom_scale    = dt_dev_get_zoom_scale(port, zoom, 1<<closeup, 1);
+  const float zoom_scale    = dt_dev_get_zoom_scale(port, zoom, 1<<closeup, TRUE);
   const float backbuf_scale = dt_dev_get_zoom_scale(port, zoom, 1.0f, 0) * ppd;
 
   dt_print_pipe(DT_DEBUG_EXPOSE,
@@ -1699,10 +1925,10 @@ void dt_view_paint_surface(cairo_t *cr,
 
   cairo_save(cr);
 
-  if(port->iso_12646)
+  if(port->color_assessment)
   {
     // force middle grey in background
-    dt_gui_gtk_set_source_rgb(cr, DT_GUI_COLOR_ISO12646_BG);
+    dt_gui_gtk_set_source_rgb(cr, DT_GUI_COLOR_COLOR_ASSESSMENT_BG);
   }
   else
   {
@@ -1715,84 +1941,93 @@ void dt_view_paint_surface(cairo_t *cr,
   cairo_paint(cr);
 
   cairo_translate(cr, 0.5 * width, 0.5 * height);
-
-  dt_pthread_mutex_lock(&dev->preview_pipe->backbuf_mutex);
+  dt_pthread_mutex_lock(&pp->backbuf_mutex);
 
   const int maxw = MIN(port->width, backbuf_scale * processed_width * (1<<closeup) / ppd);
   const int maxh = MIN(port->height, backbuf_scale * processed_height * (1<<closeup) / ppd);
 
-  if(port->iso_12646
+  if(port->color_assessment
      && window != DT_WINDOW_SLIDESHOW)
   {
     // draw the white frame around picture
-    const double ratio = dt_conf_get_float("darkroom/ui/iso12464_ratio") * 2;
-    const double borw = maxw + tb * ratio, borh = maxh + tb * ratio;
+    const double ratio = dt_conf_get_float("darkroom/ui/color_assessment_border_white_ratio");
+    const double borw = maxw + 2.0 * tb * ratio;
+    const double borh = maxh + 2.0 * tb * ratio;
     cairo_rectangle(cr, -0.5 * borw, -0.5 * borh, borw, borh);
-    dt_gui_gtk_set_source_rgb(cr, DT_GUI_COLOR_ISO12646_FG);
+    dt_gui_gtk_set_source_rgb(cr, DT_GUI_COLOR_COLOR_ASSESSMENT_FG);
     cairo_fill(cr);
   }
 
   cairo_rectangle(cr, -0.5 * maxw, -0.5 * maxh, maxw, maxh);
   cairo_clip(cr);
-
-  cairo_scale(cr, zoom_scale, zoom_scale);
-
   const double back_scale = (buf_scale == 0 ? 1.0 : backbuf_scale / buf_scale) * (1<<closeup) / ppd;
   const double trans_x = (offset_x - zoom_x) * processed_width * buf_scale - 0.5 * buf_width;
   const double trans_y = (offset_y - zoom_y) * processed_height * buf_scale - 0.5 * buf_height;
 
-  if(dev->preview_pipe->output_imgid == dev->image_storage.id
+  // Check if we should use the preview pipe for fallback rendering
+  // This is only valid for the main develop (not for pinned images which have dev != darktable.develop)
+  const gboolean use_preview_fallback =
+     (dev == darktable.develop)
+     && pp->output_imgid == dev->image_storage.id
      && (port->pipe->output_imgid != dev->image_storage.id
          || fabsf(backbuf_scale / buf_scale - 1.0f) > .09f
          || floor(maxw / 2 / back_scale) - 1 > MIN(- trans_x, trans_x + buf_width)
          || floor(maxh / 2 / back_scale) - 1 > MIN(- trans_y, trans_y + buf_height))
-     && (port == &dev->full || port == &dev->preview2))
+     && (port == &dev->full || port == &dev->preview2);
+
+  if(use_preview_fallback)
   {
+    dt_print_pipe(DT_DEBUG_PIPE | DT_DEBUG_EXPOSE | DT_DEBUG_VERBOSE,
+      "dt_view_paint_surface sets DT_DEV_PIPE_ZOOMED", port->pipe, NULL, DT_DEVICE_NONE, NULL, NULL);
+    port->pipe->changed |= DT_DEV_PIPE_ZOOMED;
     if(port->pipe->status == DT_DEV_PIXELPIPE_VALID)
       port->pipe->status = DT_DEV_PIXELPIPE_DIRTY;
 
     // draw preview
-    float wd = processed_width * dev->preview_pipe->processed_width / MAX(1, dev->full.pipe->processed_width);
-    float ht = processed_height * dev->preview_pipe->processed_width / MAX(1, dev->full.pipe->processed_width);
+    const int full_pipe_width = dev->full.pipe ? dev->full.pipe->processed_width : 1;
+    const float wd = processed_width * pp->processed_width / MAX(1, full_pipe_width);
+    const float ht = processed_height * pp->processed_width / MAX(1, full_pipe_width);
 
-    cairo_surface_t *preview = dt_view_create_surface(dev->preview_pipe->backbuf,
-                                                      dev->preview_pipe->backbuf_width,
-                                                      dev->preview_pipe->backbuf_height);
-    cairo_set_source_surface(cr, preview, (preview_x - zoom_x) * wd - 0.5 * dev->preview_pipe->backbuf_width,
-                                          (preview_y - zoom_y) * ht - 0.5 * dev->preview_pipe->backbuf_height);
+    cairo_save(cr);
+    cairo_scale(cr, zoom_scale, zoom_scale);
+    _match_rotation(cr, pts + 6, (preview_x - zoom_x) * wd, (preview_y - zoom_y) * ht, 0, 0);
+    cairo_surface_t *preview = dt_view_create_surface(pp->backbuf, pp->backbuf_width, pp->backbuf_height);
+    cairo_set_source_surface(cr, preview, -0.5 * pp->backbuf_width, -0.5 * pp->backbuf_height);
     cairo_pattern_set_filter(cairo_get_source(cr), CAIRO_FILTER_FAST);
     cairo_paint(cr);
+    cairo_surface_destroy(preview);
+    cairo_restore(cr);
 
     dt_print_pipe(DT_DEBUG_EXPOSE,
-        "dt_view_paint_surface",
-         dev->preview_pipe, NULL, DT_DEVICE_NONE, NULL, NULL,
+        "  painting",
+         pp, NULL, DT_DEVICE_NONE, NULL, NULL,
          "size %4lux%-4lu processed %4.0fx%-4.0f "
          "buf %4dx%-4d scale=%.3f "
          "zoom (x=%6.2f y=%6.2f) -> offset (x=%+.3f y=%+.3f)",
          width, height, wd, ht,
-         dev->preview_pipe->backbuf_width, dev->preview_pipe->backbuf_height, zoom_scale,
-         dev->preview_pipe->backbuf_zoom_x, dev->preview_pipe->backbuf_zoom_y,
+         pp->backbuf_width, pp->backbuf_height, zoom_scale,
+         pp->backbuf_zoom_pos[0], pp->backbuf_zoom_pos[1],
          preview_x, preview_y);
-    cairo_surface_destroy(preview);
   }
 
-  dt_pthread_mutex_unlock(&dev->preview_pipe->backbuf_mutex);
+  dt_pthread_mutex_unlock(&pp->backbuf_mutex);
 
   if(port->pipe->output_imgid == dev->image_storage.id
-     || dev->preview_pipe->output_imgid != dev->image_storage.id)
+     || pp->output_imgid != dev->image_storage.id)
   {
     dt_print_pipe(DT_DEBUG_EXPOSE,
-        "dt_view_paint_surface",
+        "  painting",
          port->pipe, NULL, DT_DEVICE_NONE, NULL, NULL,
          "size %4lux%-4lu processed %4dx%-4d "
          "buf %4dx%-4d scale=%.3f "
          "zoom (x=%6.2f y=%6.2f) -> offset (x=%+.3f y=%+.3f)",
          width, height, processed_width, processed_height,
          buf_width, buf_height, buf_scale,
-         buf_zoom_x, buf_zoom_y,
+         buf_zoom_pos[0], buf_zoom_pos[1],
          offset_x, offset_y);
-    cairo_scale(cr, back_scale / zoom_scale, back_scale / zoom_scale);
-    cairo_translate(cr, trans_x, trans_y);
+
+    cairo_scale(cr, back_scale, back_scale);
+    _match_rotation(cr, pts, trans_x, trans_y, buf_width, buf_height);
     cairo_surface_t *surface = dt_view_create_surface(buf, buf_width, buf_height);
     cairo_set_source_surface(cr, surface, 0, 0);
     cairo_pattern_set_filter(cairo_get_source(cr), CAIRO_FILTER_FAST);
@@ -1827,12 +2062,12 @@ dt_view_context_t dt_view_get_context_hash(void)
   int closeup;
   float zoom_x, zoom_y;
   dt_dev_get_viewport_params(&dev->full, &zoom, &closeup, &zoom_x, &zoom_y);
-  const float zoom_scale = dt_dev_get_zoom_scale(&dev->full, zoom, 1<<closeup, 1);
+  const float zoom_scale = dt_dev_get_zoom_scale(&dev->full, zoom, 1<<closeup, TRUE);
 
   // calculate a hash on view parameters. Use flt_prec here to avoid different hashes
   // for irrelevant variations for the zooms.
   const float flt_prec = 1.e6;
-  const uint32_t test[] = { (uint32_t)dev->full.iso_12646,
+  const uint32_t test[] = { (uint32_t)dev->full.color_assessment,
                             (uint32_t)darktable.gui->show_focus_peaking,
                             (uint32_t)closeup,
                             (uint32_t)(zoom_scale * flt_prec),

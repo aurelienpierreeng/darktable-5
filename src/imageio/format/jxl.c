@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2021-2024 darktable developers.
+    Copyright (C) 2021-2026 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -176,11 +176,14 @@ int write_image(struct dt_imageio_module_data_t *data,
     // Must preserve original profile for lossless mode
     basic_info.uses_original_profile = JXL_TRUE;
     LIBJXL_ASSERT(JxlEncoderSetFrameDistance(frame_settings, 0.0f));
-    LIBJXL_ASSERT(JxlEncoderSetFrameLossless(frame_settings, JXL_TRUE));
+
+    // Do not enable libjxl lossless mode for float16, see #17487
+    if(!(params->bpp == 16 && params->pixel_type))
+      LIBJXL_ASSERT(JxlEncoderSetFrameLossless(frame_settings, JXL_TRUE));
   }
   else
   {
-    basic_info.uses_original_profile = params->original == FALSE ? JXL_FALSE : JXL_TRUE;
+    basic_info.uses_original_profile = JXL_FALSE;
     const float distance
 #if JPEGXL_NUMERIC_VERSION < JPEGXL_COMPUTE_NUMERIC_VERSION(0, 9, 0)
         = MIN(params->quality >= 30 ? 0.1f + (100 - params->quality) * 0.09f
@@ -473,7 +476,8 @@ void *get_params(dt_imageio_module_format_t *self)
   d->bpp = dt_conf_get_int("plugins/imageio/format/jxl/bpp");
   d->pixel_type = dt_conf_get_bool("plugins/imageio/format/jxl/pixel_type") & 1;
   d->quality = dt_conf_get_int("plugins/imageio/format/jxl/quality");
-  d->original = dt_conf_get_bool("plugins/imageio/format/jxl/original") & 1;
+  /* (see below)
+    d->original = dt_conf_get_bool("plugins/imageio/format/jxl/original") & 1; */
   d->effort = dt_conf_get_int("plugins/imageio/format/jxl/effort");
   d->tier = dt_conf_get_int("plugins/imageio/format/jxl/tier");
 
@@ -495,7 +499,8 @@ int set_params(dt_imageio_module_format_t *self, const void *params, const int s
   dt_bauhaus_combobox_set(g->bpp, _bpp_to_enum(d->bpp));
   dt_bauhaus_combobox_set(g->pixel_type, d->pixel_type & 1);
   dt_bauhaus_slider_set(g->quality, d->quality);
-  dt_bauhaus_combobox_set(g->original, d->original & 1);
+  /* (see below)
+    dt_bauhaus_combobox_set(g->original, d->original & 1); */
   dt_bauhaus_slider_set(g->effort, d->effort);
   dt_bauhaus_slider_set(g->tier, d->tier);
 
@@ -545,14 +550,18 @@ static void quality_changed(GtkWidget *widget, dt_imageio_jxl_gui_data_t *gui)
   const int quality = (int)dt_bauhaus_slider_get(widget);
   dt_conf_set_int("plugins/imageio/format/jxl/quality", quality);
 
+  /* see below
   const gboolean lossless = quality == 100;
   gtk_widget_set_visible(gui->original, !lossless);
+  */
 }
 
+/*
 static void original_changed(GtkWidget *widget, dt_imageio_jxl_gui_data_t *gui)
 {
   dt_conf_set_bool("plugins/imageio/format/jxl/original", dt_bauhaus_combobox_get(widget));
 }
+*/
 
 static void effort_changed(GtkWidget *widget, dt_imageio_jxl_gui_data_t *gui)
 {
@@ -570,9 +579,6 @@ void gui_init(dt_imageio_module_format_t *self)
   if(!gui) return;
   self->gui_data = gui;
 
-  GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-  self->widget = box;
-
   // bits per sample combobox
   const int bpp_enum = _bpp_to_enum(dt_conf_get_int("plugins/imageio/format/jxl/bpp"));
 
@@ -580,7 +586,6 @@ void gui_init(dt_imageio_module_format_t *self)
                                NULL, bpp_enum, bpp_changed, gui,
                                N_("8 bit"), N_("10 bit"), N_("12 bit"),
                                N_("16 bit"), N_("32 bit (float)"));
-  gtk_box_pack_start(GTK_BOX(box), gui->bpp, TRUE, TRUE, 0);
 
   // pixel type combobox
   const int pixel_type = dt_conf_get_bool("plugins/imageio/format/jxl/pixel_type") & 1;
@@ -591,7 +596,6 @@ void gui_init(dt_imageio_module_format_t *self)
   dt_bauhaus_combobox_set_default(gui->pixel_type,
                                   dt_confgen_get_bool("plugins/imageio/format/jxl/pixel_type",
                                                       DT_DEFAULT) & 1);
-  gtk_box_pack_start(GTK_BOX(box), gui->pixel_type, TRUE, TRUE, 0);
 
   gtk_widget_set_visible(gui->pixel_type, bpp_enum == 3);
   gtk_widget_set_no_show_all(gui->pixel_type, TRUE);
@@ -609,7 +613,15 @@ void gui_init(dt_imageio_module_format_t *self)
                               _("the quality of the output image\n0-29 = very lossy\n30-99 = JPEG "
                                 "quality comparable\n100 = lossless"));
   g_signal_connect(G_OBJECT(gui->quality), "value-changed", G_CALLBACK(quality_changed), gui);
-  gtk_box_pack_start(GTK_BOX(box), gui->quality, TRUE, TRUE, 0);
+
+/* As of now we should not expose this control at all:
+   - For "truly lossless" compression the original_profile should be set to
+     TRUE to avoid RGB->XYB->RGB color space conversions, so it should not be
+     user-controllable. We have already hidden this control for lossless mode.
+   - For lossy compression setting original_profile to TRUE may result in
+     suboptimal quality, see https://github.com/libjxl/libjxl/issues/4552
+     (If this issue is resolved, we could bring this control back, which is
+     why it is commented out rather than removed.)
 
   // encoding color profile combobox
   const int original = dt_conf_get_bool("plugins/imageio/format/jxl/original") & 1;
@@ -623,10 +635,10 @@ void gui_init(dt_imageio_module_format_t *self)
   dt_bauhaus_combobox_set_default(gui->original,
                                   dt_confgen_get_bool("plugins/imageio/format/jxl/original",
                                                       DT_DEFAULT) & 1);
-  gtk_box_pack_start(GTK_BOX(box), gui->original, TRUE, TRUE, 0);
 
   gtk_widget_set_visible(gui->original, quality < 100);
   gtk_widget_set_no_show_all(gui->original, TRUE);
+*/
 
   // encoding effort slider
   gui->effort = dt_bauhaus_slider_new_with_range(
@@ -639,7 +651,6 @@ void gui_init(dt_imageio_module_format_t *self)
                               _("the effort used to encode the image, higher efforts will have "
                                 "better results at the expense of longer encoding times"));
   g_signal_connect(G_OBJECT(gui->effort), "value-changed", G_CALLBACK(effort_changed), NULL);
-  gtk_box_pack_start(GTK_BOX(box), gui->effort, TRUE, TRUE, 0);
 
   // decoding speed (tier) slider
   gui->tier = dt_bauhaus_slider_new_with_range(
@@ -651,7 +662,9 @@ void gui_init(dt_imageio_module_format_t *self)
   gtk_widget_set_tooltip_text(gui->tier,
                               _("the preferred decoding speed with some sacrifice of quality"));
   g_signal_connect(G_OBJECT(gui->tier), "value-changed", G_CALLBACK(tier_changed), NULL);
-  gtk_box_pack_start(GTK_BOX(box), gui->tier, TRUE, TRUE, 0);
+
+  self->widget = dt_gui_vbox(gui->bpp, gui->pixel_type, gui->quality,
+                             /* (see above) gui->original,*/ gui->effort, gui->tier);
 }
 
 void gui_cleanup(dt_imageio_module_format_t *self)
@@ -671,9 +684,11 @@ void gui_reset(dt_imageio_module_format_t *self)
      dt_confgen_get_bool("plugins/imageio/format/jxl/pixel_type", DT_DEFAULT) & 1);
   dt_bauhaus_slider_set
     (gui->quality, dt_confgen_get_int("plugins/imageio/format/jxl/quality", DT_DEFAULT));
+/* see above
   dt_bauhaus_combobox_set
     (gui->original,
      dt_confgen_get_bool("plugins/imageio/format/jxl/original", DT_DEFAULT) & 1);
+*/
   dt_bauhaus_slider_set
     (gui->effort, dt_confgen_get_int("plugins/imageio/format/jxl/effort", DT_DEFAULT));
   dt_bauhaus_slider_set

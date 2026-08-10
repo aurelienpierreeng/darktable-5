@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2011-2024 darktable developers.
+    Copyright (C) 2011-2026 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -30,16 +30,12 @@
 #include <unistd.h>
 
 
-/* this defines an additional alignment requirement for opencl image width.
-   It can have strong effects on processing speed. Reasonable values are a
-   power of 2. set to 1 for no effect. */
-#define CL_ALIGNMENT ((piece->pipe->dsc.filters != 9u) ? 4 : 1)
-
 /* parameter RESERVE for extended roi_in sizes due to inaccuracies when doing
    roi_out -> roi_in estimations.
    Needs to be increased if tiling fails due to insufficient buffer sizes. */
 #define RESERVE 5
 
+#ifdef HAVE_OPENCL
 /* greatest common divisor */
 static unsigned _gcd(unsigned a, unsigned b)
 {
@@ -54,20 +50,21 @@ static unsigned _gcd(unsigned a, unsigned b)
 }
 
 /* least common multiple */
-static unsigned _lcm(unsigned a, unsigned b)
+static unsigned _lcm(const unsigned a, const unsigned b)
 {
   return (((unsigned long)a * b) / _gcd(a, b));
 }
+#endif
 
-static inline int _align_up(int n, int a)
+static inline int _align_up(const int n, const int a)
 {
   return n + a - (n % a);
 }
-static inline int _align_down(int n, int a)
+static inline int _align_down(const int n, const int a)
 {
   return n - (n % a);
 }
-static inline int _align_close(int n, int a)
+static inline int _align_close(const int n, const int a)
 {
   const int off = n % a;
   const int shift = (off > a/2) ? a - off : -off;
@@ -158,8 +155,16 @@ static double _nm_fitness(double x[], void *rest[])
 #define BETA 0.5    /* contraction coefficient */
 #define GAMMA 2.0   /* expansion coefficient */
 
-static int _simplex(double (*objfunc)(double[], void *[]), double start[], int n, double EPSILON,
-                    double scale, int maxiter, void (*constrain)(double[], int n), void *rest[])
+// #define DT_TILING_DEBUG
+
+static int _simplex(double (*objfunc)(double[], void *[]),
+                    const double start[],
+                    const int n,
+                    const double EPSILON,
+                    const double scale,
+                    const int maxiter,
+                    void (*constrain)(double[], int n),
+                    void *rest[])
 {
 
   int vs; /* vertex with smallest value */
@@ -234,7 +239,7 @@ static int _simplex(double (*objfunc)(double[], void *[]), double start[], int n
     f[j] = objfunc(v[j], rest);
   }
 
-#if 0
+#ifdef DT_TILING_DEBUG
   /* print out the initial values */
   printf ("Initial Values\n");
   for(j = 0; j <= n; j++)
@@ -421,7 +426,7 @@ static int _simplex(double (*objfunc)(double[], void *[]), double start[], int n
       }
     }
 
-#if 0
+#ifdef DT_TILING_DEBUG
     /* print out the value at each iteration */
     printf ("Iteration %d\n", itr);
     for(j = 0; j <= n; j++)
@@ -460,7 +465,7 @@ static int _simplex(double (*objfunc)(double[], void *[]), double start[], int n
     }
   }
 
-#if 0
+#ifdef DT_TILING_DEBUG
   printf ("The minimum was found at\n");
   for(j = 0; j < n; j++)
   {
@@ -488,19 +493,19 @@ static int _simplex(double (*objfunc)(double[], void *[]), double start[], int n
 }
 
 
-static int _nm_fit_output_to_input_roi(dt_iop_module_t *self,
-                                       dt_dev_pixelpipe_iop_t *piece,
-                                       const dt_iop_roi_t *iroi,
-                                       dt_iop_roi_t *oroi,
-                                       int delta)
+static gboolean _nm_fit_output_to_input_roi(const dt_iop_module_t *self,
+                                            const dt_dev_pixelpipe_iop_t *piece,
+                                            const dt_iop_roi_t *iroi,
+                                            dt_iop_roi_t *oroi,
+                                            const int delta)
 {
   void *rest[4] = { (void *)self, (void *)piece, (void *)iroi, (void *)oroi };
   double start[4] = { (float)oroi->x / piece->iwidth, (float)oroi->y / piece->iheight,
                       (float)oroi->width / piece->iwidth, (float)oroi->height / piece->iheight };
-  double epsilon = (double)delta / MIN(piece->iwidth, piece->iheight);
-  int maxiter = 1000;
+  const double epsilon = (double)delta / MIN(piece->iwidth, piece->iheight);
+  const int maxiter = 1000;
 
-  int iter = _simplex(_nm_fitness, start, 4, epsilon, 1.0, maxiter, NULL, rest);
+  const int iter = _simplex(_nm_fitness, start, 4, epsilon, 1.0, maxiter, NULL, rest);
 
   dt_print(DT_DEBUG_TILING | DT_DEBUG_VERBOSE,
            "[_nm_fit_output_to_input_roi] _simplex: %d, delta: %d, epsilon: %f",
@@ -519,12 +524,12 @@ static int _nm_fit_output_to_input_roi(dt_iop_module_t *self,
 /* find a matching oroi_full by probing start value of oroi and get corresponding input roi into iroi_probe.
    We search in two steps. first by a simplicistic iterative search which will succeed in most cases.
    If this does not converge, we do a downhill simplex (nelder-mead) fitting */
-static int _fit_output_to_input_roi(dt_iop_module_t *self,
-                                    dt_dev_pixelpipe_iop_t *piece,
-                                    const dt_iop_roi_t *iroi,
-                                    dt_iop_roi_t *oroi,
-                                    int delta,
-                                    int iter)
+static gboolean _fit_output_to_input_roi(dt_iop_module_t *self,
+                                         dt_dev_pixelpipe_iop_t *piece,
+                                         dt_iop_roi_t *iroi,
+                                         dt_iop_roi_t *oroi,
+                                         const int delta,
+                                         int iter)
 {
   dt_iop_roi_t iroi_probe = *iroi;
   dt_iop_roi_t save_oroi = *oroi;
@@ -558,8 +563,7 @@ static int _fit_output_to_input_roi(dt_iop_module_t *self,
   // try simplex downhill fitting now.
   // it's crucial that we have a good starting point in oroi, else this
   // will not converge as well.
-  int fit = _nm_fit_output_to_input_roi(self, piece, iroi, oroi, delta);
-  return fit;
+  return _nm_fit_output_to_input_roi(self, piece, iroi, oroi, delta);
 }
 
 
@@ -595,7 +599,7 @@ static void _default_process_tiling_ptp(dt_iop_module_t *self,
   if((tiling.factor < 2.2f)
      && (tiling.overhead < 0.2f * roi_in->width * roi_in->height * max_bpp))
   {
-    dt_print(DT_DEBUG_TILING,
+    dt_print(DT_DEBUG_PIPE | DT_DEBUG_TILING,
              "[default_process_tiling_ptp] [%s]  no need to use tiling for module '%s%s' "
              "as no real memory saving to be expected",
              dt_dev_pixelpipe_type_to_str(piece->pipe->type), self->op, dt_iop_get_instance_id(self));
@@ -655,22 +659,19 @@ static void _default_process_tiling_ptp(dt_iop_module_t *self,
   }
 
   /* Alignment rules: we need to make sure that alignment requirements of module are fulfilled.
-     Modules will report alignment requirements via xalign and yalign within tiling_callback().
-     Typical use case is demosaic where Bayer pattern requires alignment to a multiple of 2 in x and y
-     direction.
+     Modules will report alignment requirements via align within tiling_callback().
      We guarantee alignment by selecting image width/height and overlap accordingly. For a tile width/height
      that is identical to image width/height no special alignment is needed. */
 
-  const unsigned int xyalign = _lcm(tiling.xalign, tiling.yalign);
-
-  assert(xyalign != 0);
+  const unsigned int align = tiling.align;
+  assert(align != 0);
 
   /* properly align tile width and height by making them smaller if needed */
-  if(width < roi_in->width) width = (width / xyalign) * xyalign;
-  if(height < roi_in->height) height = (height / xyalign) * xyalign;
+  if(width < roi_in->width) width = (width / align) * align;
+  if(height < roi_in->height) height = (height / align) * align;
 
   /* also make sure that overlap follows alignment rules by making it wider when needed */
-  const int overlap = tiling.overlap % xyalign != 0 ? (tiling.overlap / xyalign + 1) * xyalign
+  const int overlap = tiling.overlap % align != 0 ? (tiling.overlap / align + 1) * align
                                                     : tiling.overlap;
 
   /* calculate effective tile size */
@@ -684,16 +685,12 @@ static void _default_process_tiling_ptp(dt_iop_module_t *self,
   /* sanity check: don't run wild on too many tiles */
   if(tiles_x * tiles_y > _maximum_number_tiles())
   {
-    dt_print(DT_DEBUG_TILING,
+    dt_print(DT_DEBUG_PIPE | DT_DEBUG_TILING,
              "[default_process_tiling_ptp] [%s] gave up tiling for module '%s%s'. too many tiles: %d x %d",
              dt_dev_pixelpipe_type_to_str(piece->pipe->type),
              self->op, dt_iop_get_instance_id(self), tiles_x, tiles_y);
     goto error;
   }
-
-  dt_print(DT_DEBUG_TILING,
-           "[default_process_tiling_ptp] [%s] (%dx%d) tiles with max dimensions %dx%d and overlap %d",
-           dt_dev_pixelpipe_type_to_str(piece->pipe->type), tiles_x, tiles_y, width, height, overlap);
 
   /* reserve input and output buffers for tiles */
   input = dt_alloc_aligned((size_t)width * height * in_bpp);
@@ -718,10 +715,11 @@ static void _default_process_tiling_ptp(dt_iop_module_t *self,
   dt_aligned_pixel_t processed_maximum_new = { 1.0f };
   for_four_channels(k) processed_maximum_saved[k] = piece->pipe->dsc.processed_maximum[k];
 
+  piece->pipe->tiling = TRUE;
   dt_print_pipe(DT_DEBUG_PIPE | DT_DEBUG_TILING,
-                        "process *tiled* ptp", piece->pipe, piece->module, DT_DEVICE_CPU, roi_in, roi_out,
-                        "%dx%d tiles, size=%dx%d",
-                        tiles_x, tiles_y, tile_wd, tile_ht);
+                        "default *tiled* ptp", piece->pipe, piece->module, DT_DEVICE_CPU, roi_in, roi_out,
+                        "%dx%d tiles, size=%dx%d, overlap=%d",
+                        tiles_x, tiles_y, tile_wd, tile_ht, overlap);
 
   /* iterate over tiles */
   for(size_t tx = 0; tx < tiles_x; tx++)
@@ -729,16 +727,14 @@ static void _default_process_tiling_ptp(dt_iop_module_t *self,
     const size_t wd = tx * tile_wd + width > roi_in->width ? roi_in->width - tx * tile_wd : width;
     for(size_t ty = 0; ty < tiles_y; ty++)
     {
-      piece->pipe->tiling = TRUE;
-
       const size_t ht = ty * tile_ht + height > roi_in->height ? roi_in->height - ty * tile_ht : height;
 
       /* no need to process end-tiles that are smaller than the total overlap area */
-      if((wd <= 2 * overlap && tx > 0) || (ht <= 2 * overlap && ty > 0)) continue;
+      const gboolean skipped = (wd <= 2 * overlap && tx > 0) || (ht <= 2 * overlap && ty > 0);
 
       /* origin and region of effective part of tile, which we want to store later */
-      size_t origin[] = { 0, 0, 0 };
-      size_t region[] = { wd, ht, 1 };
+      size_t origin[2] = { 0, 0 };
+      size_t region[2] = { wd, ht };
 
       /* roi_in and roi_out for process_cl on subbuffer */
       dt_iop_roi_t iroi = { roi_in->x + tx * tile_wd, roi_in->y + ty * tile_ht, wd, ht, roi_in->scale };
@@ -748,17 +744,19 @@ static void _default_process_tiling_ptp(dt_iop_module_t *self,
       const size_t ioffs = (ty * tile_ht) * ipitch + (tx * tile_wd) * in_bpp;
       size_t ooffs = (ty * tile_ht) * opitch + (tx * tile_wd) * out_bpp;
 
-      dt_print(DT_DEBUG_TILING,
-               "[default_process_tiling_ptp] [%s] tile (%zu,%zu) with %zux%zu at origin [%zu,%zu]",
-               dt_dev_pixelpipe_type_to_str(piece->pipe->type), tx, ty, wd, ht, tx * tile_wd, ty * tile_ht);
+      dt_print_pipe(DT_DEBUG_TILING,
+               skipped ? "  tile ptp skipped" : "  tile ptp", piece->pipe, piece->module, DT_DEVICE_CPU, &iroi, &oroi,
+               "tile (%zu,%zu)", tx, ty);
+      if(skipped) continue;
 
-/* prepare input tile buffer */
+      /* prepare input tile buffer */
       DT_OMP_FOR()
       for(size_t j = 0; j < ht; j++)
         memcpy((char *)input + j * wd * in_bpp, (char *)ivoid + ioffs + j * ipitch, (size_t)wd * in_bpp);
 
       /* take original processed_maximum as starting point */
       for(int k = 0; k < 4; k++) piece->pipe->dsc.processed_maximum[k] = processed_maximum_saved[k];
+      dt_dev_prepare_piece_cfa(piece, &iroi);
 
       /* call process() of module */
       self->process(self, piece, input, output, &iroi, &oroi);
@@ -791,7 +789,7 @@ static void _default_process_tiling_ptp(dt_iop_module_t *self,
         ooffs += (size_t)overlap * opitch;
       }
 
-/* copy "good" part of tile to output buffer */
+      /* copy "good" part of tile to output buffer */
       DT_OMP_FOR(shared(origin, region))
       for(size_t j = 0; j < region[1]; j++)
         memcpy((char *)ovoid + ooffs + j * opitch,
@@ -808,7 +806,8 @@ static void _default_process_tiling_ptp(dt_iop_module_t *self,
   return;
 
 error:
-  dt_control_log(_("tiling failed for module '%s'. the output most likely will be OK, but you might want to check."), self->op);
+  dt_control_log(_("tiling failed for module '%s%s'. the output most likely will be OK, but you might want to check."),
+    self->op, dt_iop_get_instance_id(self));
 // fall through
 
 fallback:
@@ -892,14 +891,10 @@ static void _default_process_tiling_roi(dt_iop_module_t *self,
   int height = MAX(roi_in->height, roi_out->height);
 
   /* Alignment rules: we need to make sure that alignment requirements of module are fulfilled.
-     Modules will report alignment requirements via xalign and yalign within tiling_callback().
-     Typical use case is demosaic where Bayer pattern requires alignment to a multiple of 2 in x and y
-     direction. */
+     Modules will report alignment requirements via align within tiling_callback(). */
 
-  /* for simplicity reasons we use only one alignment that fits to x and y requirements at the same time */
-  const unsigned int xyalign = _lcm(tiling.xalign, tiling.yalign);
-
-  assert(xyalign != 0);
+  const unsigned int align = tiling.align;
+  assert(align != 0);
 
   /* shrink tile size in case it would exceed singlebuffer size */
   if((float)width * height * max_bpp * maxbuf > singlebuffer)
@@ -909,16 +904,16 @@ static void _default_process_tiling_roi(dt_iop_module_t *self,
     /* TODO: can we make this more efficient to minimize total overlap between tiles? */
     if(width < height && scale >= 0.333f)
     {
-      height = _align_down((int)floorf(height * scale), xyalign);
+      height = _align_down((int)floorf(height * scale), align);
     }
     else if(height <= width && scale >= 0.333f)
     {
-      width = _align_down((int)floorf(width * scale), xyalign);
+      width = _align_down((int)floorf(width * scale), align);
     }
     else
     {
-      width = _align_down((int)floorf(width * sqrtf(scale)), xyalign);
-      height = _align_down((int)floorf(height * sqrtf(scale)), xyalign);
+      width = _align_down((int)floorf(width * sqrtf(scale)), align);
+      height = _align_down((int)floorf(height * sqrtf(scale)), align);
     }
     dt_print(DT_DEBUG_TILING | DT_DEBUG_VERBOSE,
              "[default_process_tiling_roi] [%s] buffer exceeds singlebuffer, corrected to %dx%d",
@@ -928,7 +923,7 @@ static void _default_process_tiling_roi(dt_iop_module_t *self,
   /* make sure we have a reasonably effective tile dimension. if not try square tiles */
   if(3 * tiling.overlap > width || 3 * tiling.overlap > height)
   {
-    width = height = _align_down((int)floorf(sqrtf((float)width * height)), xyalign);
+    width = height = _align_down((int)floorf(sqrtf((float)width * height)), align);
     dt_print(DT_DEBUG_TILING | DT_DEBUG_VERBOSE,
              "[default_process_tiling_roi] [%s] use squares because of overlap, corrected to %dx%d",
              dt_dev_pixelpipe_type_to_str(piece->pipe->type), width, height);
@@ -936,7 +931,7 @@ static void _default_process_tiling_roi(dt_iop_module_t *self,
 
   /* make sure that overlap follows alignment rules by making it wider when needed.
      overlap_in needs to be aligned, overlap_out is only here to calculate output buffer size */
-  const int overlap_in = _align_up(tiling.overlap, xyalign);
+  const int overlap_in = _align_up(tiling.overlap, align);
   const int overlap_out = ceilf((float)overlap_in / fullscale);
 
   int tiles_x = 1, tiles_y = 1;
@@ -974,9 +969,9 @@ static void _default_process_tiling_roi(dt_iop_module_t *self,
   /* calculate tile width and height excl. overlap (i.e. the good part) for output.
      values are important for all following processing steps. */
   const int tile_wd = _align_up(
-      roi_out->width % tiles_x == 0 ? roi_out->width / tiles_x : roi_out->width / tiles_x + 1, xyalign);
+      roi_out->width % tiles_x == 0 ? roi_out->width / tiles_x : roi_out->width / tiles_x + 1, align);
   const int tile_ht = _align_up(
-      roi_out->height % tiles_y == 0 ? roi_out->height / tiles_y : roi_out->height / tiles_y + 1, xyalign);
+      roi_out->height % tiles_y == 0 ? roi_out->height / tiles_y : roi_out->height / tiles_y + 1, align);
 
   dt_print_pipe(DT_DEBUG_PIPE | DT_DEBUG_TILING,
                         "process *tiled* roi", piece->pipe, piece->module, DT_DEVICE_CPU, roi_in, roi_out,
@@ -1022,11 +1017,11 @@ static void _default_process_tiling_roi(dt_iop_module_t *self,
       const int y_in = iroi_good.y;
       const int width_in = iroi_good.width;
       const int height_in = iroi_good.height;
-      const int new_x_in = MAX(_align_close(x_in - overlap_in - delta, xyalign), roi_in->x);
-      const int new_y_in = MAX(_align_close(y_in - overlap_in - delta, xyalign), roi_in->y);
-      const int new_width_in = MIN(_align_up(width_in + overlap_in + delta + (x_in - new_x_in), xyalign),
+      const int new_x_in = MAX(_align_close(x_in - overlap_in - delta, align), roi_in->x);
+      const int new_y_in = MAX(_align_close(y_in - overlap_in - delta, align), roi_in->y);
+      const int new_width_in = MIN(_align_up(width_in + overlap_in + delta + (x_in - new_x_in), align),
                                     roi_in->width + roi_in->x - new_x_in);
-      const int new_height_in = MIN(_align_up(height_in + overlap_in + delta + (y_in - new_y_in), xyalign),
+      const int new_height_in = MIN(_align_up(height_in + overlap_in + delta + (y_in - new_y_in), align),
                                      roi_in->height + roi_in->y - new_y_in);
 
       /* iroi_full based on calculated numbers and dimensions. oroi_full just set as a starting point for the
@@ -1079,10 +1074,9 @@ static void _default_process_tiling_roi(dt_iop_module_t *self,
       const size_t ioffs = ((size_t)iroi_full.y - roi_in->y)  * ipitch + ((size_t)iroi_full.x - roi_in->x) * in_bpp;
             size_t ooffs = ((size_t)oroi_good.y - roi_out->y) * opitch + ((size_t)oroi_good.x - roi_out->x) * out_bpp;
 
-      dt_print(DT_DEBUG_TILING,
-               "[default_process_tiling_roi] [%s] process tile (%zu,%zu) size %dx%d at origin [%d,%d]",
-               dt_dev_pixelpipe_type_to_str(piece->pipe->type), tx, ty,
-               iroi_full.width, iroi_full.height, iroi_full.x, iroi_full.y);
+      dt_print_pipe(DT_DEBUG_TILING,
+               "  tile roi", piece->pipe, piece->module, DT_DEVICE_CPU, &iroi_full, &oroi_full,
+               "tile (%zu,%zu)", tx, ty);
 
       /* prepare input tile buffer */
       input = dt_alloc_aligned((size_t)iroi_full.width * iroi_full.height * in_bpp);
@@ -1109,6 +1103,7 @@ static void _default_process_tiling_roi(dt_iop_module_t *self,
 
       /* take original processed_maximum as starting point */
       for(int k = 0; k < 4; k++) piece->pipe->dsc.processed_maximum[k] = processed_maximum_saved[k];
+      dt_dev_prepare_piece_cfa(piece, &iroi_full);
 
       /* call process() of module */
       self->process(self, piece, input, output, &iroi_full, &oroi_full);
@@ -1148,7 +1143,8 @@ static void _default_process_tiling_roi(dt_iop_module_t *self,
   return;
 
 error:
-  dt_control_log(_("tiling failed for module '%s'. the output most likely will be OK, but you might want to check."), self->op);
+  dt_control_log(_("tiling failed for module '%s%s'. the output most likely will be OK, but you might want to check."),
+    self->op,dt_iop_get_instance_id(self));
 // fall through
 
 fallback:
@@ -1185,8 +1181,8 @@ void default_process_tiling(dt_iop_module_t *self,
   return;
 }
 
-float dt_tiling_estimate_cpumem(dt_develop_tiling_t *tiling,
-                                dt_dev_pixelpipe_iop_t *piece,
+float dt_tiling_estimate_cpumem(const dt_develop_tiling_t *tiling,
+                                const dt_dev_pixelpipe_iop_t *piece,
                                 const dt_iop_roi_t *const roi_in,
                                 const dt_iop_roi_t *const roi_out,
                                 const int max_bpp)
@@ -1196,7 +1192,7 @@ float dt_tiling_estimate_cpumem(dt_develop_tiling_t *tiling,
   if(dt_tiling_piece_fits_host_memory(piece, m_dx, m_dy, max_bpp, tiling->factor, tiling->overhead))
     return (float)m_dx * m_dy * max_bpp * tiling->factor + tiling->overhead;
 
-  float fullscale = fmaxf(roi_in->scale / roi_out->scale, sqrtf(((float)roi_in->width * roi_in->height)
+  const float fullscale = fmaxf(roi_in->scale / roi_out->scale, sqrtf(((float)roi_in->width * roi_in->height)
                                                               / ((float)roi_out->width * roi_out->height)));
   float available = dt_get_available_pipe_mem(piece->pipe);
   available = fmaxf(available - ((float)roi_out->width * roi_out->height * max_bpp)
@@ -1210,24 +1206,24 @@ float dt_tiling_estimate_cpumem(dt_develop_tiling_t *tiling,
   int width = MAX(roi_in->width, roi_out->width);
   int height = MAX(roi_in->height, roi_out->height);
 
-  const unsigned int xyalign = _lcm(tiling->xalign, tiling->yalign);
+  const unsigned int align = tiling->align;
   if((float)width * height * max_bpp * maxbuf > singlebuffer)
   {
     const float scale = singlebuffer / ((float)width * height * max_bpp * maxbuf);
     if(width < height && scale >= 0.333f)
-       height = _align_down((int)floorf(height * scale), xyalign);
+       height = _align_down((int)floorf(height * scale), align);
     else if(height <= width && scale >= 0.333f)
-      width = _align_down((int)floorf(width * scale), xyalign);
+      width = _align_down((int)floorf(width * scale), align);
     else
     {
-      width = _align_down((int)floorf(width * sqrtf(scale)), xyalign);
-      height = _align_down((int)floorf(height * sqrtf(scale)), xyalign);
+      width = _align_down((int)floorf(width * sqrtf(scale)), align);
+      height = _align_down((int)floorf(height * sqrtf(scale)), align);
     }
   }
 
   if(3 * tiling->overlap > width || 3 * tiling->overlap > height)
-    width = height = _align_down((int)floorf(sqrtf((float)width * height)), xyalign);
-  const int overlap_in = _align_up(tiling->overlap, xyalign);
+    width = height = _align_down((int)floorf(sqrtf((float)width * height)), align);
+  const int overlap_in = _align_up(tiling->overlap, align);
   const int overlap_out = ceilf((float)overlap_in / fullscale);
 
   int tiles_x = 1, tiles_y = 1;
@@ -1246,8 +1242,8 @@ float dt_tiling_estimate_cpumem(dt_develop_tiling_t *tiling,
 }
 
 #ifdef HAVE_OPENCL
-float dt_tiling_estimate_clmem(dt_develop_tiling_t *tiling,
-                               dt_dev_pixelpipe_iop_t *piece,
+float dt_tiling_estimate_clmem(const dt_develop_tiling_t *tiling,
+                               const dt_dev_pixelpipe_iop_t *piece,
                                const dt_iop_roi_t *const roi_in,
                                const dt_iop_roi_t *const roi_out,
                                const int max_bpp)
@@ -1256,7 +1252,10 @@ float dt_tiling_estimate_clmem(dt_develop_tiling_t *tiling,
   const float fullscale = fmaxf(roi_in->scale / roi_out->scale, sqrtf(((float)roi_in->width * roi_in->height)
                                                               / ((float)roi_out->width * roi_out->height)));
   const gboolean use_pinned_memory = dt_opencl_use_pinned_memory(devid);
-  const int pinned_buffer_overhead = use_pinned_memory ? 2 : 0;
+  /* If using pinned transfer on devices with dedicated GPU mem there is an additional
+     mem pressure as they will allocate also on device as cache for performance
+  */
+  const float pinned_buffer_overhead = use_pinned_memory && !dt_opencl_unified_memory(devid) ? 2.0f : 0.0f;
   const float pinned_buffer_slack = use_pinned_memory ? 0.85f : 1.0f;
   const float available = (float)dt_opencl_get_device_available(devid);
   const float factor = fmaxf(tiling->factor_cl + pinned_buffer_overhead, 1.0f);
@@ -1267,28 +1266,27 @@ float dt_tiling_estimate_clmem(dt_develop_tiling_t *tiling,
   int width = MIN(MAX(roi_in->width, roi_out->width), darktable.opencl->dev[devid].max_image_width);
   int height = MIN(MAX(roi_in->height, roi_out->height), darktable.opencl->dev[devid].max_image_height);
 
-  unsigned int xyalign = _lcm(tiling->xalign, tiling->yalign);
-  xyalign = _lcm(xyalign, CL_ALIGNMENT);
+  const unsigned int align = _lcm(tiling->align, dt_opencl_tiling_align(devid));
 
   if((float)width * height * max_bpp * maxbuf > singlebuffer)
   {
     const float scale = singlebuffer / ((float)width * height * max_bpp * maxbuf);
 
     if(width < height && scale >= 0.333f)
-       height = _align_down((int)floorf(height * scale), xyalign);
+       height = _align_down((int)floorf(height * scale), align);
      else if(height <= width && scale >= 0.333f)
-       width = _align_down((int)floorf(width * scale), xyalign);
+       width = _align_down((int)floorf(width * scale), align);
      else
     {
-      width = _align_down((int)floorf(width * sqrtf(scale)), xyalign);
-      height = _align_down((int)floorf(height * sqrtf(scale)), xyalign);
+      width = _align_down((int)floorf(width * sqrtf(scale)), align);
+      height = _align_down((int)floorf(height * sqrtf(scale)), align);
     }
   }
 
   if(3 * tiling->overlap > width || 3 * tiling->overlap > height)
-    width = height = _align_down((int)floorf(sqrtf((float)width * height)), xyalign);
+    width = height = _align_down((int)floorf(sqrtf((float)width * height)), align);
 
-  const int overlap_in = _align_up(tiling->overlap, xyalign);
+  const int overlap_in = _align_up(tiling->overlap, align);
   const int overlap_out = ceilf((float)overlap_in / fullscale);
 
   int tiles_x = 1, tiles_y = 1;
@@ -1318,6 +1316,9 @@ static int _default_process_tiling_cl_ptp(dt_iop_module_t *self,
   cl_int err = CL_SUCCESS; // we take care for errors below
   cl_mem input = NULL;
   cl_mem output = NULL;
+  size_t cltile_w = 0;
+  size_t cltile_h = 0;
+
   cl_mem pinned_input = NULL;
   cl_mem pinned_output = NULL;
   void *input_buffer = NULL;
@@ -1334,16 +1335,18 @@ static int _default_process_tiling_cl_ptp(dt_iop_module_t *self,
 
   /* get tiling requirements of module */
   dt_develop_tiling_t tiling = { 0 };
-  tiling.factor_cl = tiling.maxbuf_cl = -1;
+  tiling.factor_cl = tiling.maxbuf_cl = -1.0f;
   self->tiling_callback(self, piece, roi_in, roi_out, &tiling);
-  if(tiling.factor_cl < 0) tiling.factor_cl = tiling.factor;
-  if(tiling.maxbuf_cl < 0) tiling.maxbuf_cl = tiling.maxbuf;
+  if(tiling.factor_cl < 0.0f) tiling.factor_cl = tiling.factor;
+  if(tiling.maxbuf_cl < 0.0f) tiling.maxbuf_cl = tiling.maxbuf;
 
   /* shall we use pinned memory transfers? */
   gboolean use_pinned_memory = dt_opencl_use_pinned_memory(devid);
-  const int pinned_buffer_overhead = use_pinned_memory ? 2 : 0; // add two additional pinned memory buffers
-                                                                // which seemingly get allocated not only on
-                                                                // host but also on device (why???)
+  /* If using pinned transfer on devices with dedicated GPU mem there is an additional
+     mem pressure as they will allocate also on device as cache for performance
+  */
+  const float pinned_buffer_overhead = use_pinned_memory && !dt_opencl_unified_memory(devid) ? 2.0f : 0.0f;
+
   // avoid problems when pinned buffer size gets too close to max_mem_alloc size
   const float pinned_buffer_slack = use_pinned_memory ? 0.85f : 1.0f;
   const float available = (float)dt_opencl_get_device_available(devid);
@@ -1387,35 +1390,28 @@ static int _default_process_tiling_cl_ptp(dt_iop_module_t *self,
   }
 
   /* Alignment rules: we need to make sure that alignment requirements of module are fulfilled.
-     Modules will report alignment requirements via xalign and yalign within tiling_callback().
-     Typical use case is demosaic where Bayer pattern requires alignment to a multiple of 2 in x and y
-     direction. Additional alignment requirements are set via definition of CL_ALIGNMENT.
+     Modules will report alignment requirements via align within tiling_callback().
+     Additional alignment requirements are set via dt_opencl_tiling_align().
      We guarantee alignment by selecting image width/height and overlap accordingly. For a tile width/height
-     that is identical to image width/height no special alignment is done. */
+     that is identical to image width/height no special alignment is done.
+  */
+  const unsigned int align = tiling.align;
 
-  /* for simplicity reasons we use only one alignment that fits to x and y requirements at the same time */
-  const unsigned int xyalign = _lcm(tiling.xalign, tiling.yalign);
-
-  /* determining alignment requirement for tile width/height.
-     in case of tile width also align according to definition of CL_ALIGNMENT */
-  const unsigned int walign = _lcm(xyalign, CL_ALIGNMENT);
-  const unsigned int halign = xyalign;
-
-  assert(xyalign != 0 && walign != 0 && halign != 0);
+  const unsigned int walign = _lcm(align, dt_opencl_tiling_align(devid));
+  const unsigned int halign = align;
+  assert(align != 0 && walign != 0 && halign != 0);
 
   /* properly align tile width and height by making them smaller if needed */
   if(width < roi_in->width) width = (width / walign) * walign;
   if(height < roi_in->height) height = (height / halign) * halign;
 
   /* also make sure that overlap follows alignment rules by making it wider when needed */
-  const int overlap = tiling.overlap % xyalign != 0 ? (tiling.overlap / xyalign + 1) * xyalign
+  const int overlap = tiling.overlap % align != 0 ? (tiling.overlap / align + 1) * align
                                                     : tiling.overlap;
-
 
   /* calculate effective tile size */
   const int tile_wd = width - 2 * overlap > 0 ? width - 2 * overlap : 1;
   const int tile_ht = height - 2 * overlap > 0 ? height - 2 * overlap : 1;
-
 
   /* calculate number of tiles */
   const int tiles_x = width < roi_in->width ? ceilf(roi_in->width / (float)tile_wd) : 1;
@@ -1432,11 +1428,6 @@ static int _default_process_tiling_cl_ptp(dt_iop_module_t *self,
     return DT_OPENCL_PROCESS_CL;
   }
 
-  dt_print_pipe(DT_DEBUG_PIPE | DT_DEBUG_TILING,
-                        "process *tiled* ptp", piece->pipe, piece->module, devid, roi_in, roi_out,
-                        "%dx%d tiles%s, size=%dx%d",
-                        tiles_x, tiles_y, (use_pinned_memory) ? ", pinned" : "", tile_wd, tile_ht);
-
   /* store processed_maximum to be re-used and aggregated */
   dt_aligned_pixel_t processed_maximum_saved;
   dt_aligned_pixel_t processed_maximum_new = { 1.0f };
@@ -1445,23 +1436,11 @@ static int _default_process_tiling_cl_ptp(dt_iop_module_t *self,
   /* reserve pinned input and output memory for host<->device data transfer */
   if(use_pinned_memory)
   {
-    pinned_input = dt_opencl_alloc_device_buffer_with_flags(devid, (size_t)width * height * in_bpp,
-                                                            CL_MEM_READ_ONLY | CL_MEM_ALLOC_HOST_PTR);
-    if(pinned_input == NULL)
-    {
-      dt_print(DT_DEBUG_OPENCL | DT_DEBUG_TILING,
-               "[default_process_tiling_cl_ptp] could not alloc pinned "
-               "input buffer for module '%s%s'",
-               self->op, dt_iop_get_instance_id(self));
-      use_pinned_memory = FALSE;
-    }
-  }
+    const size_t bsize = (size_t)width * height * in_bpp;
+    pinned_input = dt_opencl_alloc_device_buffer_with_flags(devid, bsize, CL_MEM_READ_ONLY | CL_MEM_ALLOC_HOST_PTR);
 
-  if(use_pinned_memory)
-  {
-
-    input_buffer = dt_opencl_map_buffer(devid, pinned_input, CL_TRUE, CL_MAP_WRITE, 0,
-                                        (size_t)width * height * in_bpp);
+    if(pinned_input)
+      input_buffer = dt_opencl_map_buffer(devid, pinned_input, TRUE, CL_MAP_WRITE, 0, bsize);
     if(input_buffer == NULL)
     {
       dt_print(DT_DEBUG_OPENCL | DT_DEBUG_TILING,
@@ -1474,24 +1453,11 @@ static int _default_process_tiling_cl_ptp(dt_iop_module_t *self,
 
   if(use_pinned_memory)
   {
+    const size_t bsize = (size_t)width * height * out_bpp;
+    pinned_output = dt_opencl_alloc_device_buffer_with_flags(devid, bsize, CL_MEM_WRITE_ONLY | CL_MEM_ALLOC_HOST_PTR);
+    if(pinned_output)
+      output_buffer = dt_opencl_map_buffer(devid, pinned_output, TRUE, CL_MAP_READ, 0, bsize);
 
-    pinned_output = dt_opencl_alloc_device_buffer_with_flags(devid, (size_t)width * height * out_bpp,
-                                                             CL_MEM_WRITE_ONLY | CL_MEM_ALLOC_HOST_PTR);
-    if(pinned_output == NULL)
-    {
-      dt_print(DT_DEBUG_OPENCL | DT_DEBUG_TILING,
-               "[default_process_tiling_cl_ptp] could not alloc pinned output "
-               "buffer for module '%s%s'",
-               self->op, dt_iop_get_instance_id(self));
-      use_pinned_memory = FALSE;
-    }
-  }
-
-  if(use_pinned_memory)
-  {
-
-    output_buffer = dt_opencl_map_buffer(devid, pinned_output, CL_TRUE, CL_MAP_READ, 0,
-                                         (size_t)width * height * out_bpp);
     if(output_buffer == NULL)
     {
       dt_print(DT_DEBUG_OPENCL | DT_DEBUG_TILING,
@@ -1502,75 +1468,79 @@ static int _default_process_tiling_cl_ptp(dt_iop_module_t *self,
     }
   }
 
+  dt_print_pipe(DT_DEBUG_PIPE | DT_DEBUG_TILING,
+                        "default *tiled* cl_ptp", piece->pipe, piece->module, devid, roi_in, roi_out,
+                        "%dx%d tiles%s, size=%dx%d, overlap=%d",
+                        tiles_x, tiles_y, (use_pinned_memory) ? ", pinned" : "", tile_wd, tile_ht, overlap);
   /* iterate over tiles */
+  piece->pipe->tiling = TRUE;
   for(size_t tx = 0; tx < tiles_x; tx++)
   {
     for(size_t ty = 0; ty < tiles_y; ty++)
     {
-      piece->pipe->tiling = TRUE;
-
       const size_t wd = tx * tile_wd + width > roi_in->width ? roi_in->width - tx * tile_wd : width;
       const size_t ht = ty * tile_ht + height > roi_in->height ? roi_in->height - ty * tile_ht : height;
 
       /* no need to process (end)tiles that are smaller than the total overlap area */
-      if((wd <= 2 * overlap && tx > 0) || (ht <= 2 * overlap && ty > 0)) continue;
+      const gboolean skipped = (wd <= 2 * overlap && tx > 0) || (ht <= 2 * overlap && ty > 0);
 
       /* origin and region of effective part of tile, which we want to store later */
-      size_t origin[] = { 0, 0, 0 };
-      size_t region[] = { wd, ht, 1 };
+      size_t origin[2] = { 0, 0 };
+      size_t region[2] = { wd, ht };
 
       /* roi_in and roi_out for process_cl on subbuffer */
-      dt_iop_roi_t iroi = { roi_in->x + tx * tile_wd, roi_in->y + ty * tile_ht, wd, ht, roi_in->scale };
-      dt_iop_roi_t oroi = { roi_out->x + tx * tile_wd, roi_out->y + ty * tile_ht, wd, ht, roi_out->scale };
+      const dt_iop_roi_t iroi = { roi_in->x + tx * tile_wd, roi_in->y + ty * tile_ht, wd, ht, roi_in->scale };
+      const dt_iop_roi_t oroi = { roi_out->x + tx * tile_wd, roi_out->y + ty * tile_ht, wd, ht, roi_out->scale };
 
 
       /* offsets of tile into ivoid and ovoid */
       const size_t ioffs = (ty * tile_ht) * ipitch + (tx * tile_wd) * in_bpp;
       size_t ooffs = (ty * tile_ht) * opitch + (tx * tile_wd) * out_bpp;
 
-
-      dt_print(DT_DEBUG_TILING,
-               "[default_process_tiling_cl_ptp] [%s] tile (%zu,%zu) size %zux%zu at origin [%zu,%zu]",
-               dt_dev_pixelpipe_type_to_str(piece->pipe->type), tx, ty,
-               wd, ht, tx * tile_wd, ty * tile_ht);
+      dt_print_pipe(DT_DEBUG_TILING,
+               skipped ? "  tile cl_ptp skipped" : "  tile cl_ptp", piece->pipe, piece->module, devid, &iroi, &oroi,
+               "tile (%zu,%zu)", tx, ty);
+      if(skipped) continue;
 
       /* get input and output buffers */
-      input = dt_opencl_alloc_device(devid, wd, ht, in_bpp);
-      output = dt_opencl_alloc_device(devid, wd, ht, out_bpp);
-      if(output == NULL || input == NULL)
+      if(cltile_w != wd || cltile_h != ht)
       {
-        err = CL_MEM_OBJECT_ALLOCATION_FAILURE;
-        goto error;
+        dt_opencl_release_mem_object(input);
+        dt_opencl_release_mem_object(output);
+        input = dt_opencl_alloc_device(devid, wd, ht, in_bpp);
+        output = dt_opencl_alloc_device(devid, wd, ht, out_bpp);
+        if(output == NULL || input == NULL)
+        {
+          err = CL_MEM_OBJECT_ALLOCATION_FAILURE;
+          goto error;
+        }
+        cltile_w = wd;
+        cltile_h = ht;
       }
 
       if(use_pinned_memory)
       {
-/* prepare pinned input tile buffer: copy part of input image */
+        /* prepare pinned input tile buffer: copy part of input image */
         DT_OMP_FOR()
         for(size_t j = 0; j < ht; j++)
           memcpy((char *)input_buffer + j * wd * in_bpp, (char *)ivoid + ioffs + j * ipitch,
                  (size_t)wd * in_bpp);
 
         /* blocking memory transfer: pinned host input buffer -> opencl/device tile */
-        err = dt_opencl_write_host_to_device_raw(devid, (char *)input_buffer, input, origin, region,
-                                                 wd * in_bpp, CL_TRUE);
-        if(err != CL_SUCCESS)
-        {
-          use_pinned_memory = FALSE;
-          goto error;
-        }
+        err = dt_opencl_write_host_to_image_raw(devid, (char *)input_buffer, input, origin, region,
+                                                 wd * in_bpp, TRUE);
+        if(err != CL_SUCCESS) use_pinned_memory = FALSE;
       }
       else
       {
         /* blocking direct memory transfer: host input image -> opencl/device tile */
-        err = dt_opencl_write_host_to_device_raw(devid, (char *)ivoid + ioffs, input, origin, region, ipitch,
-                                                 CL_TRUE);
-        if(err != CL_SUCCESS) goto error;
+        err = dt_opencl_write_host_to_image_raw(devid, (char *)ivoid + ioffs, input, origin, region, ipitch, TRUE);
       }
+      if(err != CL_SUCCESS) goto error;
 
       /* take original processed_maximum as starting point */
       for(int k = 0; k < 4; k++) piece->pipe->dsc.processed_maximum[k] = processed_maximum_saved[k];
-
+      dt_dev_prepare_piece_cfa(piece, &iroi);
       /* call process_cl of module */
       err = self->process_cl(self, piece, input, output, &iroi, &oroi);
       if(err != CL_SUCCESS)
@@ -1591,8 +1561,8 @@ static int _default_process_tiling_cl_ptp(dt_iop_module_t *self,
       if(use_pinned_memory)
       {
         /* blocking memory transfer: complete opencl/device tile -> pinned host output buffer */
-        err = dt_opencl_read_host_from_device_raw(devid, (char *)output_buffer, output, origin, region,
-                                                  wd * out_bpp, CL_TRUE);
+        err = dt_opencl_read_host_from_image_raw(devid, (char *)output_buffer, output, origin, region,
+                                                  wd * out_bpp, TRUE);
         if(err != CL_SUCCESS)
         {
           use_pinned_memory = FALSE;
@@ -1617,8 +1587,8 @@ static int _default_process_tiling_cl_ptp(dt_iop_module_t *self,
 
       if(use_pinned_memory)
       {
-/* copy "good" part of tile from pinned output buffer to output image */
-//        DT_OMP_FOR(shared(origin, region))
+        /* copy "good" part of tile from pinned output buffer to output image */
+        //        DT_OMP_FOR(shared(origin, region))
         for(size_t j = 0; j < region[1]; j++)
           memcpy((char *)ovoid + ooffs + j * opitch,
                  (char *)output_buffer + ((j + origin[1]) * wd + origin[0]) * out_bpp,
@@ -1627,16 +1597,10 @@ static int _default_process_tiling_cl_ptp(dt_iop_module_t *self,
       else
       {
         /* blocking direct memory transfer: good part of opencl/device tile -> host output image */
-        err = dt_opencl_read_host_from_device_raw(devid, (char *)ovoid + ooffs, output, origin, region,
-                                                  opitch, CL_TRUE);
+        err = dt_opencl_read_host_from_image_raw(devid, (char *)ovoid + ooffs, output, origin, region,
+                                                  opitch, TRUE);
         if(err != CL_SUCCESS) goto error;
       }
-
-      /* release input and output buffers */
-      dt_opencl_release_mem_object(input);
-      input = NULL;
-      dt_opencl_release_mem_object(output);
-      output = NULL;
 
       /* block until opencl queue has finished to free all used event handlers */
       dt_opencl_finish_sync_pipe(devid, piece->pipe->type);
@@ -1689,6 +1653,10 @@ static int _default_process_tiling_cl_roi(dt_iop_module_t *self,
   cl_int err = CL_SUCCESS; // we take care for errors below
   cl_mem input = NULL;
   cl_mem output = NULL;
+  size_t cltile_ow = 0;
+  size_t cltile_oh = 0;
+  size_t cltile_iw = 0;
+  size_t cltile_ih = 0;
   cl_mem pinned_input = NULL;
   cl_mem pinned_output = NULL;
   void *input_buffer = NULL;
@@ -1721,9 +1689,11 @@ static int _default_process_tiling_cl_roi(dt_iop_module_t *self,
 
   /* shall we use pinned memory transfers? */
   gboolean use_pinned_memory = dt_opencl_use_pinned_memory(devid);
-  const int pinned_buffer_overhead = use_pinned_memory ? 2 : 0; // add two additional pinned memory buffers
-                                                                // which seemingly get allocated not only on
-                                                                // host but also on device (why???)
+
+  /* If using pinned transfer on devices with dedicated GPU mem there is an additional
+     mem pressure as they will allocate also on device as cache for performance
+  */
+  const float pinned_buffer_overhead = use_pinned_memory && !dt_opencl_unified_memory(devid) ? 2.0f : 0.0f;
   // avoid problems when pinned buffer size gets too close to max_mem_alloc size
   const float pinned_buffer_slack = use_pinned_memory ? 0.85f : 1.0f;
   const float available = (float)dt_opencl_get_device_available(devid);
@@ -1735,16 +1705,8 @@ static int _default_process_tiling_cl_roi(dt_iop_module_t *self,
   int width = MIN(MAX(roi_in->width, roi_out->width), darktable.opencl->dev[devid].max_image_width);
   int height = MIN(MAX(roi_in->height, roi_out->height), darktable.opencl->dev[devid].max_image_height);
 
-  /* Alignment rules: we need to make sure that alignment requirements of module are fulfilled.
-     Modules will report alignment requirements via xalign and yalign within tiling_callback().
-     Typical use case is demosaic where Bayer pattern requires alignment to a multiple of 2 in x and y
-     direction. Additional alignment requirements are set via definition of CL_ALIGNMENT. */
-
-  /* for simplicity reasons we use only one alignment that fits to x and y requirements at the same time */
-  unsigned int xyalign = _lcm(tiling.xalign, tiling.yalign);
-  xyalign = _lcm(xyalign, CL_ALIGNMENT);
-
-  assert(xyalign != 0);
+  const unsigned int align = _lcm(tiling.align, dt_opencl_tiling_align(devid));
+  assert(align != 0);
 
   /* shrink tile size in case it would exceed singlebuffer size */
   if((float)width * height * max_bpp * maxbuf > singlebuffer)
@@ -1753,18 +1715,18 @@ static int _default_process_tiling_cl_roi(dt_iop_module_t *self,
 
     if(width < height && scale >= 0.333f)
     {
-      height = _align_down((int)floorf(height * scale), xyalign);
+      height = _align_down((int)floorf(height * scale), align);
     }
     else if(height <= width && scale >= 0.333f)
     {
-      width = _align_down((int)floorf(width * scale), xyalign);
+      width = _align_down((int)floorf(width * scale), align);
     }
     else
     {
-      width = _align_down((int)floorf(width * sqrtf(scale)), xyalign);
-      height = _align_down((int)floorf(height * sqrtf(scale)), xyalign);
+      width = _align_down((int)floorf(width * sqrtf(scale)), align);
+      height = _align_down((int)floorf(height * sqrtf(scale)), align);
     }
-    dt_print(DT_DEBUG_TILING | DT_DEBUG_VERBOSE,
+    dt_print(DT_DEBUG_TILING | DT_DEBUG_OPENCL | DT_DEBUG_VERBOSE,
              "[default_process_tiling_cl_roi] [%s] buffer exceeds singlebuffer, corrected to %dx%d",
              dt_dev_pixelpipe_type_to_str(piece->pipe->type), width, height);
   }
@@ -1772,7 +1734,7 @@ static int _default_process_tiling_cl_roi(dt_iop_module_t *self,
   /* make sure we have a reasonably effective tile dimension. if not try square tiles */
   if(3 * tiling.overlap > width || 3 * tiling.overlap > height)
   {
-    width = height = _align_down((int)floorf(sqrtf((float)width * height)), xyalign);
+    width = height = _align_down((int)floorf(sqrtf((float)width * height)), align);
     dt_print(DT_DEBUG_TILING | DT_DEBUG_VERBOSE,
              "[default_process_tiling_cl_roi] [%s] use squares because of overlap, corrected to %dx%d",
              dt_dev_pixelpipe_type_to_str(piece->pipe->type), width, height);
@@ -1780,7 +1742,7 @@ static int _default_process_tiling_cl_roi(dt_iop_module_t *self,
 
   /* make sure that overlap follows alignment rules by making it wider when needed.
      overlap_in needs to be aligned, overlap_out is only here to calculate output buffer size */
-  const int overlap_in = _align_up(tiling.overlap, xyalign);
+  const int overlap_in = _align_up(tiling.overlap, align);
   const int overlap_out = ceilf((float)overlap_in / fullscale);
 
   int tiles_x = 1, tiles_y = 1;
@@ -1817,9 +1779,9 @@ static int _default_process_tiling_cl_roi(dt_iop_module_t *self,
   /* calculate tile width and height excl. overlap (i.e. the good part) for output.
      important for all following processing steps. */
   const int tile_wd = _align_up(
-      roi_out->width % tiles_x == 0 ? roi_out->width / tiles_x : roi_out->width / tiles_x + 1, xyalign);
+      roi_out->width % tiles_x == 0 ? roi_out->width / tiles_x : roi_out->width / tiles_x + 1, align);
   const int tile_ht = _align_up(
-      roi_out->height % tiles_y == 0 ? roi_out->height / tiles_y : roi_out->height / tiles_y + 1, xyalign);
+      roi_out->height % tiles_y == 0 ? roi_out->height / tiles_y : roi_out->height / tiles_y + 1, align);
 
   dt_print_pipe(DT_DEBUG_PIPE | DT_DEBUG_TILING,
                         "process *tiled* roi", piece->pipe, piece->module, devid, roi_in, roi_out,
@@ -1833,22 +1795,10 @@ static int _default_process_tiling_cl_roi(dt_iop_module_t *self,
   /* reserve pinned input and output memory for host<->device data transfer */
   if(use_pinned_memory)
   {
-    pinned_input = dt_opencl_alloc_device_buffer_with_flags(devid, (size_t)width * height * in_bpp,
-                                                            CL_MEM_READ_ONLY | CL_MEM_ALLOC_HOST_PTR);
-    if(pinned_input == NULL)
-    {
-      dt_print(DT_DEBUG_OPENCL | DT_DEBUG_TILING,
-               "[default_process_tiling_cl_roi] [%s] could not alloc pinned input buffer for module '%s%s'",
-               dt_dev_pixelpipe_type_to_str(piece->pipe->type), self->op, dt_iop_get_instance_id(self));
-      use_pinned_memory = FALSE;
-    }
-  }
-
-  if(use_pinned_memory)
-  {
-
-    input_buffer = dt_opencl_map_buffer(devid, pinned_input, CL_TRUE, CL_MAP_WRITE, 0,
-                                        (size_t)width * height * in_bpp);
+    const size_t bsize = (size_t)width * height * in_bpp;
+    pinned_input = dt_opencl_alloc_device_buffer_with_flags(devid, bsize, CL_MEM_READ_ONLY | CL_MEM_ALLOC_HOST_PTR);
+    if(pinned_input)
+      input_buffer = dt_opencl_map_buffer(devid, pinned_input, TRUE, CL_MAP_WRITE, 0, bsize);
     if(input_buffer == NULL)
     {
       dt_print(DT_DEBUG_OPENCL | DT_DEBUG_TILING,
@@ -1861,23 +1811,10 @@ static int _default_process_tiling_cl_roi(dt_iop_module_t *self,
 
   if(use_pinned_memory)
   {
-
-    pinned_output = dt_opencl_alloc_device_buffer_with_flags(devid, (size_t)width * height * out_bpp,
-                                                             CL_MEM_WRITE_ONLY | CL_MEM_ALLOC_HOST_PTR);
-    if(pinned_output == NULL)
-    {
-      dt_print(DT_DEBUG_OPENCL | DT_DEBUG_TILING,
-               "[default_process_tiling_cl_roi] [%s] could not alloc pinned output buffer for module '%s%s'",
-               dt_dev_pixelpipe_type_to_str(piece->pipe->type), self->op, dt_iop_get_instance_id(self));
-      use_pinned_memory = FALSE;
-    }
-  }
-
-  if(use_pinned_memory)
-  {
-
-    output_buffer = dt_opencl_map_buffer(devid, pinned_output, CL_TRUE, CL_MAP_READ, 0,
-                                         (size_t)width * height * out_bpp);
+    const size_t bsize = (size_t)width * height * out_bpp;
+    pinned_output = dt_opencl_alloc_device_buffer_with_flags(devid, bsize, CL_MEM_WRITE_ONLY | CL_MEM_ALLOC_HOST_PTR);
+    if(pinned_output)
+      output_buffer = dt_opencl_map_buffer(devid, pinned_output, TRUE, CL_MAP_READ, 0, bsize);
     if(output_buffer == NULL)
     {
       dt_print(DT_DEBUG_OPENCL | DT_DEBUG_TILING,
@@ -1890,12 +1827,11 @@ static int _default_process_tiling_cl_roi(dt_iop_module_t *self,
 
 
   /* iterate over tiles */
+  piece->pipe->tiling = TRUE;
   for(size_t tx = 0; tx < tiles_x; tx++)
   {
     for(size_t ty = 0; ty < tiles_y; ty++)
     {
-      piece->pipe->tiling = TRUE;
-
       /* the output dimensions of the good part of this specific tile */
       const size_t wd = (tx + 1) * tile_wd > roi_out->width ? (size_t)roi_out->width - tx * tile_wd : tile_wd;
       const size_t ht = (ty + 1) * tile_ht > roi_out->height ? (size_t)roi_out->height - ty * tile_ht : tile_ht;
@@ -1917,18 +1853,19 @@ static int _default_process_tiling_cl_roi(dt_iop_module_t *self,
       _print_roi(&oroi_good, "tile oroi_good");
 
       /* now we need to calculate full region of this tile: increase input roi to take care of overlap
-         requirements
-         and alignment and add additional delta to correct for possible rounding errors in modify_roi_in()
-         -> generates first estimate of iroi_full */
+         requirements and alignment and add additional delta to correct for possible rounding errors in
+         modify_roi_in()
+         -> generates first estimate of iroi_full
+      */
       const int x_in = iroi_good.x;
       const int y_in = iroi_good.y;
       const int width_in = iroi_good.width;
       const int height_in = iroi_good.height;
-      const int new_x_in = MAX(_align_close(x_in - overlap_in - delta, xyalign), roi_in->x);
-      const int new_y_in = MAX(_align_close(y_in - overlap_in - delta, xyalign), roi_in->y);
-      const int new_width_in = MIN(_align_up(width_in + overlap_in + delta + (x_in - new_x_in), xyalign),
+      const int new_x_in = MAX(_align_close(x_in - overlap_in - delta, align), roi_in->x);
+      const int new_y_in = MAX(_align_close(y_in - overlap_in - delta, align), roi_in->y);
+      const int new_width_in = MIN(_align_up(width_in + overlap_in + delta + (x_in - new_x_in), align),
                                     roi_in->width + roi_in->x - new_x_in);
-      const int new_height_in = MIN(_align_up(height_in + overlap_in + delta + (y_in - new_y_in), xyalign),
+      const int new_height_in = MIN(_align_up(height_in + overlap_in + delta + (y_in - new_y_in), align),
                                      roi_in->height + roi_in->y - new_y_in);
 
       /* iroi_full based on calculated numbers and dimensions. oroi_full just set as a starting point for the
@@ -1985,31 +1922,40 @@ static int _default_process_tiling_cl_roi(dt_iop_module_t *self,
       const size_t ioffs = (size_t)(in_dy  * ipitch) + (size_t)(in_dx * in_bpp);
       const size_t ooffs = (size_t)(out_dy * opitch) + (size_t)(out_dx * out_bpp);
 
-      /* origin and region of full input tile */
-      size_t iorigin[] = { 0, 0, 0 };
-      size_t iregion[] = { iroi_full.width, iroi_full.height, 1 };
+      /* region of full input tile */
+      const size_t iregion[2] = { iroi_full.width, iroi_full.height };
 
-      /* origin and region of full output tile */
-      size_t oforigin[] = { 0, 0, 0 };
-      size_t ofregion[] = { oroi_full.width, oroi_full.height, 1 };
+      /* region of full output tile */
+      const size_t ofregion[2] = { oroi_full.width, oroi_full.height };
 
       /* origin and region of good part of output tile */
-      size_t oorigin[] = { oroi_good.x - oroi_full.x, oroi_good.y - oroi_full.y, 0 };
-      size_t oregion[] = { oroi_good.width, oroi_good.height, 1 };
+      const size_t oorigin[2] = { oroi_good.x - oroi_full.x, oroi_good.y - oroi_full.y };
+      const size_t oregion[2] = { oroi_good.width, oroi_good.height };
 
-      dt_print(DT_DEBUG_TILING,
-               "[default_process_tiling_cl_roi] [%s] process tile (%zu,%zu) size %dx%d at origin [%d,%d]",
-               dt_dev_pixelpipe_type_to_str(piece->pipe->type), tx, ty,
-               iroi_full.width, iroi_full.height, iroi_full.x, iroi_full.y);
-      dt_print(DT_DEBUG_TILING | DT_DEBUG_VERBOSE,
-               "[default_process_tiling_cl_roi]    dest [%lu,%lu] at [%lu,%lu], "
-               "offsets [%i,%i] -> [%i,%i], delta=%i\n",
-               oregion[0], oregion[1], oorigin[0], oorigin[1], in_dx, in_dy,
-               out_dx, out_dy, delta);
+      dt_print_pipe(DT_DEBUG_TILING,
+              "  tile cl_roi", piece->pipe, piece->module, devid, &iroi_full, &oroi_full,
+              "tile (%zu,%zu)", tx, ty);
+      dt_print_pipe(DT_DEBUG_TILING | DT_DEBUG_VERBOSE,
+             "  tile cl_roi", piece->pipe, piece->module, devid, &iroi_full, &oroi_full,
+              "tile (%zu,%zu)  offsets=[%i,%i] delta=%i", tx, ty, out_dx, out_dy, delta);
 
       /* get opencl input and output buffers */
-      input = dt_opencl_alloc_device(devid, iroi_full.width, iroi_full.height, in_bpp);
-      output = dt_opencl_alloc_device(devid, oroi_full.width, oroi_full.height, out_bpp);
+      if(cltile_iw != iroi_full.width || cltile_ih != iroi_full.height)
+      {
+        dt_opencl_release_mem_object(input);
+        input = dt_opencl_alloc_device(devid, iroi_full.width, iroi_full.height, in_bpp);
+        cltile_iw = iroi_full.width;
+        cltile_ih = iroi_full.height;
+      }
+
+      if(cltile_ow != oroi_full.width || cltile_oh != oroi_full.height)
+      {
+        dt_opencl_release_mem_object(output);
+        output = dt_opencl_alloc_device(devid, oroi_full.width, oroi_full.height, out_bpp);
+        cltile_ow = oroi_full.width;
+        cltile_oh = oroi_full.height;
+      }
+
       if(output == NULL || input == NULL)
       {
         err = CL_MEM_OBJECT_ALLOCATION_FAILURE;
@@ -2018,32 +1964,29 @@ static int _default_process_tiling_cl_roi(dt_iop_module_t *self,
 
       if(use_pinned_memory)
       {
-/* prepare pinned input tile buffer: copy part of input image */
+        /* prepare pinned input tile buffer: copy part of input image */
         DT_OMP_FOR(shared(iroi_full))
         for(size_t j = 0; j < iroi_full.height; j++)
           memcpy((char *)input_buffer + j * iroi_full.width * in_bpp, (char *)ivoid + ioffs + j * ipitch,
                  (size_t)iroi_full.width * in_bpp);
 
         /* blocking memory transfer: pinned host input buffer -> opencl/device tile */
-        err = dt_opencl_write_host_to_device_raw(devid, (char *)input_buffer, input, iorigin, iregion,
-                                                 (size_t)iroi_full.width * in_bpp, CL_TRUE);
-        if(err != CL_SUCCESS)
-        {
-          use_pinned_memory = FALSE;
-          goto error;
-        }
+        err = dt_opencl_write_host_to_image_raw(devid, (char *)input_buffer, input, CLIMG_ORIGIN, iregion,
+                                                 (size_t)iroi_full.width * in_bpp, TRUE);
+        if(err != CL_SUCCESS) use_pinned_memory = FALSE;
       }
       else
       {
         /* blocking direct memory transfer: host input image -> opencl/device tile */
-        err = dt_opencl_write_host_to_device_raw(devid, (char *)ivoid + ioffs, input, iorigin, iregion,
-                                                 ipitch, CL_TRUE);
-        if(err != CL_SUCCESS) goto error;
+        err = dt_opencl_write_host_to_image_raw(devid, (char *)ivoid + ioffs, input, CLIMG_ORIGIN, iregion,
+                                                 ipitch, TRUE);
       }
+      if(err != CL_SUCCESS) goto error;
 
       /* take original processed_maximum as starting point */
       for(int k = 0; k < 4; k++) piece->pipe->dsc.processed_maximum[k] = processed_maximum_saved[k];
 
+      dt_dev_prepare_piece_cfa(piece, &iroi_full);
       /* call process_cl of module */
       err = self->process_cl(self, piece, input, output, &iroi_full, &oroi_full);
       if(err != CL_SUCCESS)
@@ -2065,14 +2008,14 @@ static int _default_process_tiling_cl_roi(dt_iop_module_t *self,
       if(use_pinned_memory)
       {
         /* blocking memory transfer: complete opencl/device tile -> pinned host output buffer */
-        err = dt_opencl_read_host_from_device_raw(devid, (char *)output_buffer, output, oforigin, ofregion,
-                                                  (size_t)oroi_full.width * out_bpp, CL_TRUE);
+        err = dt_opencl_read_host_from_image_raw(devid, (char *)output_buffer, output, CLIMG_ORIGIN, ofregion,
+                                                  (size_t)oroi_full.width * out_bpp, TRUE);
         if(err != CL_SUCCESS)
         {
           use_pinned_memory = FALSE;
           goto error;
         }
-/* copy "good" part of tile from pinned output buffer to output image */
+        /* copy "good" part of tile from pinned output buffer to output image */
         DT_OMP_FOR(shared(oroi_full, oorigin, oregion))
         for(size_t j = 0; j < oregion[1]; j++)
           memcpy((char *)ovoid + ooffs + j * opitch,
@@ -2082,16 +2025,10 @@ static int _default_process_tiling_cl_roi(dt_iop_module_t *self,
       else
       {
         /* blocking direct memory transfer: good part of opencl/device tile -> host output image */
-        err = dt_opencl_read_host_from_device_raw(devid, (char *)ovoid + ooffs, output, oorigin, oregion,
-                                                  opitch, CL_TRUE);
+        err = dt_opencl_read_host_from_image_raw(devid, (char *)ovoid + ooffs, output, oorigin, oregion,
+                                                  opitch, TRUE);
         if(err != CL_SUCCESS) goto error;
       }
-
-      /* release input and output buffers */
-      dt_opencl_release_mem_object(input);
-      input = NULL;
-      dt_opencl_release_mem_object(output);
-      output = NULL;
 
       /* block until opencl queue has finished to free all used event handlers */
       dt_opencl_finish_sync_pipe(devid, piece->pipe->type);
@@ -2119,12 +2056,10 @@ error:
   dt_opencl_release_mem_object(output);
   piece->pipe->tiling = FALSE;
   const gboolean pinning_error = (use_pinned_memory == FALSE) && dt_opencl_use_pinned_memory(devid);
-  dt_print(DT_DEBUG_OPENCL | DT_DEBUG_TILING,
-           "[default_process_tiling_opencl_roi] [%s] couldn't run process_cl() "
-           "for module '%s%s' in tiling mode:%s %s",
-           dt_dev_pixelpipe_type_to_str(piece->pipe->type),
-           self->op, dt_iop_get_instance_id(self),
-           (pinning_error) ? " pinning problem" : "", cl_errstr(err));
+  dt_print_pipe(DT_DEBUG_OPENCL | DT_DEBUG_TILING,
+           "default tiling_cl_roi error", piece->pipe, piece->module, devid, roi_in, roi_out,
+           "%serror=%s",
+           (pinning_error) ? "pinning problem " : "", cl_errstr(err));
 
   if(pinning_error) darktable.opencl->dev[devid].pinned_error = TRUE;
   return err;
@@ -2158,7 +2093,7 @@ int default_process_tiling_cl(dt_iop_module_t *self,
                               const dt_iop_roi_t *const roi_out,
                               const int in_bpp)
 {
-  return -1;
+  return DT_OPENCL_DEFAULT_ERROR;
 }
 #endif
 
@@ -2168,7 +2103,7 @@ int default_process_tiling_cl(dt_iop_module_t *self,
    no overlap between tiles, and an pixel alignment of 1 in x and y direction, i.e. no special
    alignment required. Simple pixel to pixel modules (take tonecurve as an example) can happily
    live with that.
-   (1) Small overhead like look-up-tables in tonecurve can be ignored safely. */
+   (1) Small overhead like look-up-tables can be ignored safely. */
 void default_tiling_callback(dt_iop_module_t *self,
                              dt_dev_pixelpipe_iop_t *piece,
                              const dt_iop_roi_t *roi_in,
@@ -2184,31 +2119,9 @@ void default_tiling_callback(dt_iop_module_t *self,
   tiling->maxbuf_cl = tiling->maxbuf;
   tiling->overhead = 0;
   tiling->overlap = 0;
-  tiling->xalign = 1;
-  tiling->yalign = 1;
+  tiling->align = 1;
 
   if((self->flags() & IOP_FLAGS_TILING_FULL_ROI) == IOP_FLAGS_TILING_FULL_ROI) tiling->overlap = 4;
-
-  if(self->iop_order > dt_ioppr_get_iop_order(piece->pipe->iop_order_list, "demosaic", 0)) return;
-
-  // all operations that work with mosaiced data should respect pattern size!
-
-  if(!piece->pipe->dsc.filters) return;
-
-  if(piece->pipe->dsc.filters == 9u)
-  {
-    // X-Trans, sensor is 6x6 but algorithms have been corrected to work with 3x3
-    tiling->xalign = 3;
-    tiling->yalign = 3;
-  }
-  else
-  {
-    // Bayer, good old 2x2
-    tiling->xalign = 2;
-    tiling->yalign = 2;
-  }
-
-  return;
 }
 
 gboolean dt_tiling_piece_fits_host_memory(const dt_dev_pixelpipe_iop_t *piece,
@@ -2221,7 +2134,7 @@ gboolean dt_tiling_piece_fits_host_memory(const dt_dev_pixelpipe_iop_t *piece,
   const size_t available = dt_get_available_pipe_mem(piece->pipe);
   const size_t total = factor * width * height * bpp + overhead;
 
-  return (total <= available) ? TRUE : FALSE;
+  return total <= available;
 }
 
 // clang-format off

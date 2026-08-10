@@ -16,6 +16,7 @@ darktable is **not** a free Adobe® Lightroom® replacement.
 3. [Requirements](#requirements)
    - [Supported platforms](#supported-platforms)
    - [Hardware](#hardware)
+   - [AI features (optional)](#ai-features-optional )
 4. [Installing](#installing)
    - [Latest release](#latest-release)
    - [Development snapshot](#development-snapshot)
@@ -59,8 +60,9 @@ Requirements
 * FreeBSD
 * NetBSD
 * OpenBSD
-* Windows 8.1 with [UCRT](https://support.microsoft.com/en-us/topic/update-for-universal-c-runtime-in-windows-c0514201-7fe6-95a3-b0a5-287930f3560c) and later
-* macOS 13.5 and later
+* Windows 10 and later
+* Apple Silicon Macs running macOS 14 and later
+* Intel Macs running macOS 15 and later
 
 *Big-endian platforms are not supported.*
 
@@ -85,6 +87,66 @@ contrast equalizer, retouch or liquify to be slow beyond usable.*
 *A GPU is not mandatory but is strongly recommended for a smoother experience.
 Nvidia GPUs are recommended for safety because some AMD drivers behave unreliably with some modules (e.g. local contrast).*
 
+### AI features (optional)
+
+Darktable includes optional AI-powered features such as object masks, denoise and upscale.
+These require building with `-DUSE_AI=ON` (off by default), or `--enable-ai` when building
+with the build helper script `build.sh`. AI features are disabled by default in preferences
+and must be enabled by the user. Models are downloaded from the AI tab in preferences
+(default repository: [darktable-org/darktable-ai](https://github.com/darktable-org/darktable-ai)).
+
+**CPU inference** is bundled and works out of the box - no additional software is needed.
+On macOS (Apple Silicon), CoreML acceleration and on Windows, DirectML GPU acceleration
+are also bundled by default. Processing on CPU is slower than GPU but requires no
+special hardware.
+
+**GPU acceleration** significantly speeds up AI inference but requires installing a
+GPU-enabled build of [ONNX Runtime](https://onnxruntime.ai/) separately:
+
+* **NVIDIA (CUDA):** Linux and Windows.
+  * Supported NVIDIA GPU with up-to-date drivers (Maxwell or newer)
+  * [CUDA Toolkit 12](https://developer.nvidia.com/cuda-12-0-0-download-archive) or [CUDA Toolkit 13](https://developer.nvidia.com/cuda-13-0-0-download-archive)
+  * [cuDNN 9.x](https://developer.nvidia.com/cudnn-downloads)
+* **AMD (ROCm):** Linux only.
+  * Supported AMD GPU with up-to-date drivers (RDNA2/CDNA or newer), see [compatibility matrix](https://rocm.docs.amd.com/en/latest/compatibility/compatibility-matrix.html)
+  * [ROCm 6+](https://rocm.docs.amd.com/projects/install-on-linux/en/latest/)
+  * [MIGraphX](https://rocm.docs.amd.com/projects/AMDMIGraphX/en/latest/install/install-migraphx.html) (may require separate install, e.g. `apt install migraphx migraphx-dev` on Ubuntu)
+* **Intel (OpenVINO):** Linux and Windows.
+  * Supported Intel GPU with up-to-date drivers (integrated Gen9+, discrete Arc, or NPU Meteor Lake+)
+  * [Intel OpenCL](https://www.intel.com/content/www/us/en/developer/articles/tool/opencl-drivers.html) or/and [Level Zero runtime](https://www.intel.com/content/www/us/en/docs/dpcpp-cpp-compiler/developer-guide-reference/2025-2/intel-oneapi-level-zero.html) (included with drivers on Windows; on Linux may need `intel-opencl-icd` or `level-zero`)
+  * On Windows, requires [OpenVINO Toolkit](https://docs.openvino.ai/2026/get-started/install-openvino/install-openvino-windows.html) installation
+* **Windows (DirectML):** bundled, works with any DirectX 12 compatible GPU (NVIDIA, AMD, Intel).
+  No extra install needed.
+  * Windows 10 1903+ (DirectML is a system component)
+* **macOS (CoreML):** bundled, uses Apple Neural Engine automatically.
+  No extra install needed.
+  * macOS 11+ (Big Sur)
+  * Apple Silicon (M1+)
+
+**GPU memory:** 4 GB VRAM minimum. If GPU inference fails (out of memory, unsupported op,
+EP crash), darktable automatically retries on CPU and continues.
+
+**AMD first-run latency:** on AMD GPUs the first inference per model is significantly
+slower because ROCm/MIGraphX compiles the model graph on the fly. The compiled graph
+is cached, so subsequent runs of the same model are fast.
+
+To enable GPU acceleration, run one of the install scripts:
+
+Linux:
+```bash
+curl -fsSL https://raw.githubusercontent.com/darktable-org/darktable/HEAD/tools/ai/install-ort-gpu.sh | bash
+```
+
+Windows (PowerShell):
+```powershell
+irm https://raw.githubusercontent.com/darktable-org/darktable/HEAD/tools/ai/install-ort-gpu.ps1 | iex
+```
+
+Then point darktable at the installed library via the **AI** tab in preferences
+(click **detect**). See [tools/ai/README.md](tools/ai/README.md) for flags,
+prerequisites, manual install, and troubleshooting. Verify the active provider
+with `darktable -d ai`.
+
 Installing
 ----------
 
@@ -93,13 +155,12 @@ you can build the software yourself following the instructions [below](#building
 
 ### Latest release
 
-4.8.1 (stable)
+5.6.0 (stable)
 
-* [Download executable for Windows](https://github.com/darktable-org/darktable/releases/download/release-4.8.1/darktable-4.8.1-win64.exe)
-* [Download executable for macOS on Intel](https://github.com/darktable-org/darktable/releases/download/release-4.8.1/darktable-4.8.1-x86_64.dmg)
-* [Download executable for macOS on Apple Silicon](https://github.com/darktable-org/darktable/releases/download/release-4.8.1/darktable-4.8.1-arm64.dmg)
-* [Download executable for macOS 13.5 on Apple Silicon](https://github.com/darktable-org/darktable/releases/download/release-4.8.1/darktable-4.8.1-arm64-13.5.dmg)
-* [Download AppImage for Linux](https://github.com/darktable-org/darktable/releases/download/release-4.8.1/darktable-4.8.1-x86_64.AppImage)
+* [Download package for Windows](https://github.com/darktable-org/darktable/releases/download/release-5.6.0/darktable-5.6.0-win64.exe)
+* [Download disk image for macOS on Apple Silicon](https://github.com/darktable-org/darktable/releases/download/release-5.6.0/darktable-5.6.0-arm64.dmg)
+* [Download disk image for macOS on Intel](https://github.com/darktable-org/darktable/releases/download/release-5.6.0/darktable-5.6.0-x86_64.dmg)
+* [Download AppImage for Linux](https://github.com/darktable-org/darktable/releases/download/release-5.6.0/Darktable-5.6.0-x86_64.AppImage)
 * [Install native packages or add a third-party repository for Linux distros](https://software.opensuse.org/download.html?project=graphics:darktable:stable&package=darktable)
 * [Install Flatpak package for Linux](https://flathub.org/apps/details/org.darktable.Darktable)
 * [More information about installing darktable on any system](https://www.darktable.org/install/)
@@ -174,11 +235,15 @@ Required dependencies (minimum version):
 * GLib 2.56
 * SQLite 3.26
 * libcurl 7.56
+* libpng 1.5.0 *(for PNG import & export, also for reading LUT files in PNG format)*
 * Exiv2 0.27.2 *(but at least 0.27.4 built with ISO BMFF support needed for Canon CR3 raw import)*
-* pugixml 1.5
+* potrace 1.16
+* pugixml 1.8
 
 Required dependencies (no version requirement):
 * Lensfun *(for automatic lens correction)* (Note: alpha 0.3.95 and git master branch are not supported)
+* libjpeg *(both the original IJG library and API-compatible ones, such as libjpeg-turbo, will work)*
+* LibTIFF *(for TIFF import & export)*
 * Little CMS 2
 
 Optional dependencies (minimum version):
@@ -190,7 +255,9 @@ Optional dependencies (minimum version):
 * libgphoto2 2.5 *(for camera tethering)*
 * Imath 3.1.0 *(for 16-bit "half" float TIFF export and faster import)*
 * libavif 0.9.3 *(for AVIF import & export)*
-* libheif 1.13.0 *(for HEIF/HEIC/HIF import; also for AVIF import if no libavif)*
+* ONNX Runtime 1.18 *(for AI inference)*
+* libarchive 3.8.5 *(for AI models download)*
+* libheif 1.13.0 *(for HEIF import & export; also for AVIF import if no libavif)*
 * libjxl 0.7.0 *(for JPEG XL import & export)*
 * WebP 0.3.0 *(for WebP import & export)*
 
@@ -203,8 +270,13 @@ Optional dependencies (no version requirement):
 * OpenJPEG *(for JPEG 2000 import & export)*
 * GraphicsMagick or ImageMagick *(for misc image format import)*
 
-To install all the dependencies on Linux systems, you may use the source repositories of your distribution
-(provided they are up-to-date):
+To install all the dependencies on Linux systems, you may use the source repository of your distribution.
+This will install the same packages that were used to build the official darktable package on your system.
+Most likely, you will want to build a newer version than the one packaged in the distribution. So please
+note that although this does not happen very often, it is possible that a new version of darktable will
+have a new (required or optional) dependency. So the commands below only simplify the creation of your
+build environment, but will not replace your attention to the build process and possibly finding and
+installing certain additional dependency packages.
 
 #### Fedora and RHEL/CentOS
 
@@ -220,14 +292,12 @@ sudo zypper si -d darktable
 
 #### Ubuntu
 
+Recent Ubuntu releases do not include the deb-src sources out of the box, even in commented form.
+To add them, you need to run "Software & Updates" and on the first tab that opens, "Ubuntu Software",
+check the "Source code" checkbox. Only after that you can use the following command:
+
 ```bash
-sed -e '/^#\sdeb-src /s/^# *//;t;d' "/etc/apt/sources.list" \
-  | sudo tee /etc/apt/sources.list.d/darktable-sources-tmp.list > /dev/null \
-  && (
-    sudo apt-get update
-    sudo apt-get build-dep darktable
-  )
-sudo rm /etc/apt/sources.list.d/darktable-sources-tmp.list
+sudo apt-get build-dep darktable
 ```
 
 #### Debian
@@ -235,19 +305,6 @@ sudo rm /etc/apt/sources.list.d/darktable-sources-tmp.list
 ```bash
 sudo apt-get build-dep darktable
 ```
-
-#### Install missing dependencies
-
-If mandatory dependencies are missing on your system, the software build will fail with
-errors like `Package XXX has not been found` or `Command YYY has no provider on this system`.
-If you see one of these errors you should find out which package provides the missing package/command in your distribution,
-then install it. This can usually be done in your package manager (not the application manager
-customarily provided by default in your distribution) or from the internet with a search engine.
-You may need to install a package manager first (like APT on Debian/Ubuntu, or DNF on Fedora/RHEL).
-
-This process might be tedious but you only need to do it once. See
-[this page on building darktable](https://github.com/darktable-org/darktable/wiki/Building-darktable)
-for one-line commands that will install most dependencies on the most common Linux distributions.
 
 ### Get the source
 
@@ -277,7 +334,7 @@ See below (in "Using") how to start a test install of the unstable version witho
 
 #### Latest stable release
 
-5.0.0
+5.6.0
 
 The darktable project releases two major versions every year, on Summer and Winter Solstices, tagged with even numbers (e.g. 4.2, 4.4, 4.6, 4.8).
 Minor revisions are tagged with a third digit (e.g. 4.4.1, 4.4.2) and mostly provide bug fixes and camera support.
@@ -287,7 +344,7 @@ You may want to compile these stable releases yourself to get better performance
 git clone --recurse-submodules --depth 1 https://github.com/darktable-org/darktable.git
 cd darktable
 git fetch --tags
-git checkout tags/release-5.0.0
+git checkout tags/release-5.6.0
 ```
 
 ### Get submodules
@@ -303,7 +360,7 @@ git submodule update --init
 #### Easy way
 
 WARNING: If you have previously built darktable, don't forget to first completely remove (`rm -R`) the `build`
-and `/opt/darktable` directories to avoid conflicting files from different versions. Many weird behaviours and transient
+and `/opt/darktable` directories to avoid conflicting files from different versions. Many weird behaviors and transient
 bugs have been reported that can be traced to the build cache not properly invalidating the changed dependencies, so
 the safest way is to completely remove previously built binaries and start again from scratch.
 
@@ -351,11 +408,11 @@ sudo cmake --install .
 
 ##### macOS
 
-See [Homebrew](https://github.com/darktable-org/darktable/blob/master/packaging/macosx/BUILD_hb.txt) or [MacPorts](https://github.com/darktable-org/darktable/blob/master/packaging/macosx/BUILD.txt) instructions.
+See [Homebrew](packaging/macosx/BUILD_hb.txt) or [MacPorts](packaging/macosx/BUILD.txt) instructions.
 
 ##### Windows
 
-See [these instructions](https://github.com/darktable-org/darktable/tree/master/packaging/windows).
+See [these instructions](packaging/windows/README.md).
 
 ### Using
 
@@ -455,4 +512,3 @@ Community
 ---------
 
 * [Darktable forum on pixls.us](https://discuss.pixls.us/c/software/darktable/19)
-* [Darktable on Mastodon](https://photog.social/@darktable)

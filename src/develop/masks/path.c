@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2013-2024 darktable developers.
+    Copyright (C) 2013-2026 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -151,7 +151,7 @@ static void _path_border_get_XY(const float p0x,
 static inline
 float angle_2d(const float x1, const float y1, const float x_ref, const float y_ref)
 {
-  return atan2(y1 - y_ref, x1 - x_ref);
+  return atan2f(y1 - y_ref, x1 - x_ref);
 }
 
 
@@ -218,21 +218,21 @@ void _set_ctrl_angle(const float x_ref,
 
   if(!move_p2) // move p1
   {
-    const float length1 = sqrt((x1a - x_refa) * (x1a - x_refa) + (*y1 - y_ref) * (*y1 - y_ref));
+    const float length1 = dt_fast_hypotf(x1a - x_refa, *y1 - y_ref);
     const float angle2 = angle_2d(x2a, *y2, x_refa, y_ref);
     const float angle1 = angle2 - angle;
 
-    *x1 = (x_refa + length1 * cos(angle1)) / aspect_ratio;
-    *y1 = y_ref + length1 * sin(angle1);
+    *x1 = (x_refa + length1 * cosf(angle1)) / aspect_ratio;
+    *y1 = y_ref + length1 * sinf(angle1);
   }
   else // move p2
 {
-    const float length2 = sqrt((x2a - x_refa) * (x2a - x_refa) + (*y2 - y_ref) * (*y2 - y_ref));
+    const float length2 = dt_fast_hypotf(x2a - x_refa, *y2 - y_ref);
     const float angle1 = angle_2d(x1a, *y1, x_refa, y_ref);
     const float angle2 = angle1 + angle;
 
-    *x2 = (x_refa + length2 * cos(angle2)) / aspect_ratio;
-    *y2 = y_ref + length2 * sin(angle2);
+    *x2 = (x_refa + length2 * cosf(angle2)) / aspect_ratio;
+    *y2 = y_ref + length2 * sinf(angle2);
   }
 }
 
@@ -262,8 +262,8 @@ float _get_ctrl_scale(const float x_ref,
   const float x2a = x2 * aspect_ratio;
   const float x_refa = x_ref * aspect_ratio;
 
-  const float length1 = sqrt((x1a - x_refa) * (x1a - x_refa) + (y1 - y_ref) * (y1 - y_ref));
-  const float length2 = sqrt((x2a - x_refa) * (x2a - x_refa) + (y2 - y_ref) * (y2 - y_ref));
+  const float length1 = dt_fast_hypotf(x1a - x_refa, y1 - y_ref);
+  const float length2 = dt_fast_hypotf(x2a - x_refa, y2 - y_ref);
   return length1 / length2;
 }
 
@@ -299,21 +299,21 @@ void _set_ctrl_scale(const float x_ref,
 
   if(!move_p2) // move p1
   {
-    const float length2 = sqrt((x2a - x_refa) * (x2a - x_refa) + (*y2 - y_ref) * (*y2 - y_ref));
+    const float length2 = dt_fast_hypotf(x2a - x_refa, *y2 - y_ref);
     const float angle1 = angle_2d(x1a, *y1, x_refa, y_ref);
     const float length1 = length2 * scale;
 
-    *x1 = (x_refa + length1 * cos(angle1)) / aspect_ratio;
-    *y1 = y_ref + length1 * sin(angle1);
+    *x1 = (x_refa + length1 * cosf(angle1)) / aspect_ratio;
+    *y1 = y_ref + length1 * sinf(angle1);
   }
   else // move p2
   {
-    const float length1 = sqrt((x1a - x_refa) * (x1a - x_refa) + (*y1 - y_ref) * (*y1 - y_ref));
+    const float length1 = dt_fast_hypotf(x1a - x_refa, *y1 - y_ref);
     const float angle2 = angle_2d(x2a, *y2, x_refa, y_ref);
     const float length2 = length1 / scale;
 
-    *x2 = (x_refa + length2 * cos(angle2)) / aspect_ratio;
-    *y2 = y_ref + length2 * sin(angle2);
+    *x2 = (x_refa + length2 * cosf(angle2)) / aspect_ratio;
+    *y2 = y_ref + length2 * sinf(angle2);
   }
 }
 
@@ -613,18 +613,16 @@ static void _path_points_fill_border_gaps(float *cmax,
   // we have to be sure that we turn in the correct direction
   if(a2 < a1 && clockwise)
   {
-    a2 += 2 * M_PI;
+    a2 += 2.0 * M_PI;
   }
   if(a2 > a1 && !clockwise)
   {
-    a1 += 2 * M_PI;
+    a1 += 2.0 * M_PI;
   }
 
   // we determine start and end radius too
-  const float r1 = sqrtf((bmin[1] - cmax[1]) * (bmin[1] - cmax[1])
-                         + (bmin[0] - cmax[0]) * (bmin[0] - cmax[0]));
-  const float r2 = sqrtf((bmax[1] - cmax[1]) * (bmax[1] - cmax[1])
-                         + (bmax[0] - cmax[0]) * (bmax[0] - cmax[0]));
+  const float r1 = dt_fast_hypotf(bmin[1] - cmax[1], bmin[0] - cmax[0]);
+  const float r2 = dt_fast_hypotf(bmax[1] - cmax[1], bmax[0] - cmax[0]);
 
   // and the max length of the circle arc
   int l = 0;
@@ -1534,7 +1532,8 @@ static int _path_get_pts_border(dt_develop_t *dev,
     dt_free_align(border_init);
     return 1;
   }
-  else if(dt_dev_distort_transform_plus(dev, pipe, iop_order, transf_direction,
+  // Note: the if(source) branch above always returns, so this is not really an else-if.
+  if(dt_dev_distort_transform_plus(dev, pipe, iop_order, transf_direction,
                                         *points, *points_count))
   {
     if(!border
@@ -1927,7 +1926,7 @@ static int _path_events_button_pressed(dt_iop_module_t *module,
     MIN(dt_conf_get_float(DT_MASKS_CONF(form->type, path, border)), 0.5f);
 
   if(gui->creation
-     && which == 1
+     && which == GDK_BUTTON_PRIMARY
      && form->points == NULL
      && (dt_modifier_is(state, GDK_CONTROL_MASK | GDK_SHIFT_MASK)
          || dt_modifier_is(state, GDK_SHIFT_MASK)))
@@ -1939,7 +1938,7 @@ static int _path_events_button_pressed(dt_iop_module_t *module,
     return 1;
   }
   else if(gui->creation
-          && (which == 3 || gui->creation_closing_form))
+          && (which == GDK_BUTTON_SECONDARY || gui->creation_closing_form))
   {
     // we don't want a form with less than 3 points
     if(g_list_shorter_than(form->points, 4))
@@ -1979,8 +1978,8 @@ static int _path_events_button_pressed(dt_iop_module_t *module,
         // and we switch in edit mode to show all the forms
         // spots and retouch have their own handling of creation_continuous
         if(gui->creation_continuous
-           && (dt_iop_module_is(crea_module->so, "spots")
-               || dt_iop_module_is(crea_module->so, "retouch")))
+           && (dt_iop_module_is(crea_module, "spots")
+               || dt_iop_module_is(crea_module, "retouch")))
           dt_masks_set_edit_mode_single_form(crea_module, form->formid, DT_MASKS_EDIT_FULL);
         else if(!gui->creation_continuous)
           dt_masks_set_edit_mode(crea_module, DT_MASKS_EDIT_FULL);
@@ -1994,8 +1993,8 @@ static int _path_events_button_pressed(dt_iop_module_t *module,
       {
         //spot and retouch manage creation_continuous in their own way
         if(crea_module
-           && !dt_iop_module_is(crea_module->so, "spots")
-           && !dt_iop_module_is(crea_module->so, "retouch"))
+           && !dt_iop_module_is(crea_module, "spots")
+           && !dt_iop_module_is(crea_module, "retouch"))
         {
           dt_iop_gui_blend_data_t *bd = crea_module->blend_data;
           for(int n = 0; n < DEVELOP_MASKS_NB_SHAPES; n++)
@@ -2044,7 +2043,7 @@ static int _path_events_button_pressed(dt_iop_module_t *module,
       dt_control_queue_redraw_center();
     }
   }
-  else if(which == 1)
+  else if(which == GDK_BUTTON_PRIMARY)
   {
     if(gui->creation)
     {
@@ -2061,7 +2060,7 @@ static int _path_events_button_pressed(dt_iop_module_t *module,
 
       bzpt->border[0] = bzpt->border[1] = MAX(0.0005f, masks_border);
 
-      // if that's the first point we should had another one as base point
+      // if that's the first point we should add another one as base point
       if(nb == 0)
       {
         dt_masks_point_path_t *bzpt2 = malloc(sizeof(dt_masks_point_path_t));
@@ -2241,7 +2240,7 @@ static int _path_events_button_pressed(dt_iop_module_t *module,
     }
     gui->point_edited = -1;
   }
-  else if(which == 3 && gui->point_selected >= 0)
+  else if(which == GDK_BUTTON_SECONDARY && gui->point_selected >= 0)
   {
     // we remove the point (and the entire form if there is too few points)
     if(g_list_shorter_than(form->points, 4))
@@ -2299,7 +2298,7 @@ static int _path_events_button_pressed(dt_iop_module_t *module,
 
     return 1;
   }
-  else if(which == 3 && gui->feather_selected >= 0)  // right-click to reset Bézier controls
+  else if(which == GDK_BUTTON_SECONDARY && gui->feather_selected >= 0)  // right-click to reset Bézier controls
   {
     dt_masks_point_path_t *point
         = (dt_masks_point_path_t *)g_list_nth_data(form->points, gui->feather_selected);
@@ -2317,7 +2316,7 @@ static int _path_events_button_pressed(dt_iop_module_t *module,
     }
     return 1;
   }
-  else if(which == 3
+  else if(which == GDK_BUTTON_SECONDARY
           && dt_is_valid_maskid(parentid)
           && gui->edit_mode == DT_MASKS_EDIT_FULL)
   {
@@ -2647,7 +2646,7 @@ static int _path_events_mouse_moved(dt_iop_module_t *module,
     dt_masks_point_path_t *point = g_list_nth_data(form->points, k);
     const float nx = point->corner[0] * iwidth;
     const float ny = point->corner[1] * iheight;
-    const float nr = sqrtf((pts[0] - nx) * (pts[0] - nx) + (pts[1] - ny) * (pts[1] - ny));
+    const float nr = dt_fast_hypotf(pts[0] - nx, pts[1] - ny);
     const float bdr = nr / fminf(iwidth,
                                  iheight);
 
@@ -2707,7 +2706,7 @@ static int _path_events_mouse_moved(dt_iop_module_t *module,
 
   if((gui->group_selected == index) && gui->point_edited >= 0)
   {
-      const int k = gui->point_edited;
+    const int k = gui->point_edited;
     // we only select feather if the point is not "sharp"
     if(gpt->points[k * 6 + 2] != gpt->points[k * 6 + 4]
        && gpt->points[k * 6 + 3] != gpt->points[k * 6 + 5])
@@ -2749,7 +2748,8 @@ static int _path_events_mouse_moved(dt_iop_module_t *module,
   for(int k = 0; k < nb; k++)
   {
     // corner ??
-    if(pzx - gpt->points[k * 6 + 2] > -as
+    if(!gui->select_only_border
+       && pzx - gpt->points[k * 6 + 2] > -as
        && pzx - gpt->points[k * 6 + 2] < as
        && pzy - gpt->points[k * 6 + 3] > -as
        && pzy - gpt->points[k * 6 + 3] < as)
@@ -2776,7 +2776,7 @@ static int _path_events_mouse_moved(dt_iop_module_t *module,
   int near = 0;
   float dist = 0;
   _path_get_distance(pzx, pzy, as, gui, index, nb, &in, &inb, &near, &ins, &dist);
-  gui->seg_selected = dist < sqf(as) ? near : -1;
+  gui->seg_selected = !gui->select_only_border && dist < sqf(as) ? near : -1;
 
   // no segment selected, set form or source selection
   if(near < 0)
@@ -3562,8 +3562,8 @@ static void _path_falloff_roi(float *buffer,
                               const int bh)
 {
   // segment length
-  const int l = sqrt((p1[0] - p0[0]) * (p1[0] - p0[0])
-                     + (p1[1] - p0[1]) * (p1[1] - p0[1])) + 1;
+  const int l = sqrtf((p1[0] - p0[0]) * (p1[0] - p0[0])
+                      + (p1[1] - p0[1]) * (p1[1] - p0[1])) + 1;
 
   const float lx = p1[0] - p0[0];
   const float ly = p1[1] - p0[1];

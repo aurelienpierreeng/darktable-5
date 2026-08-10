@@ -233,6 +233,13 @@ const model_map_t modelMap[] = {
   },
   {
     .exif_make = "Canon",
+    .exif_model = "Canon EOS R5 C",
+    .clean_make = "Canon",
+    .clean_model = "EOS R5 C",
+    .clean_alias = "EOS R5 C"
+  },
+  {
+    .exif_make = "Canon",
     .exif_model = "Canon EOS R6m2",
     .clean_make = "Canon",
     .clean_model = "EOS R6 Mark II",
@@ -259,6 +266,20 @@ const model_map_t modelMap[] = {
     .clean_model = "EOS R100",
     .clean_alias = "EOS R100"
   },
+  {
+    .exif_make = "Canon",
+    .exif_model = "Canon EOS R5m2",
+    .clean_make = "Canon",
+    .clean_model = "EOS R5 Mark II",
+    .clean_alias = "EOS R5 Mark II"
+  },
+  {
+    .exif_make = "Canon",
+    .exif_model = "Canon EOS R1",
+    .clean_make = "Canon",
+    .clean_model = "EOS R1",
+    .clean_alias = "EOS R1"
+  },
 #endif
 };
 
@@ -282,7 +303,7 @@ static gboolean _supported_image(const gchar *filename)
   // At the moment of writing this code CR3 files are not supported by RawSpeed,
   // so they are always processed by LibRaw.
   gchar *extensions_whitelist;
-  const gchar *always_by_libraw = "cr3";
+  const gchar *always_by_libraw = "cr3 x3f";
 
   gchar *ext = g_strrstr(filename, ".");
   if(!ext)
@@ -465,6 +486,8 @@ dt_imageio_retval_t dt_imageio_open_libraw(dt_image_t *img,
 
     img->buf_dsc.filters = raw->idata.filters;
   }
+
+  dt_exif_img_check_additional_tags(img, filename);
 
   // For CR3, we only have Bayer data and a single channel
   img->buf_dsc.channels = 1;

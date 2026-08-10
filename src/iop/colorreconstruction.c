@@ -1,6 +1,6 @@
 /*
   This file is part of darktable,
-  Copyright (C) 2015-2024 darktable developers.
+  Copyright (C) 2015-2026 darktable developers.
 
   darktable is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -16,9 +16,6 @@
   along with darktable.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-#ifdef HAVE_CONFIG_H
-#include "config.h"
-#endif
 #include "bauhaus/bauhaus.h"
 #include "common/colorspaces_inline_conversions.h"
 #include "common/debug.h"
@@ -408,7 +405,7 @@ static void dt_iop_colorreconstruct_bilateral_splat(
         case COLORRECONSTRUCT_PRECEDENCE_HUE:
           m = atan2f(bin, ain) - params[0];
           // readjust m into [-pi, +pi] interval
-          m = m > M_PI ? m - 2*M_PI : (m < -M_PI ? m + 2*M_PI : m);
+          m = m > M_PI_F ? m - DT_2PI_F : (m < -M_PI_F ? m + DT_2PI_F : m);
           weight = expf(-m*m/params[1]);
           break;
 
@@ -612,7 +609,7 @@ void process(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *c
   const float sigma_s = fmax(data->spatial, 1.0f) / scale;
   const float hue = hue_conversion(data->hue); // convert to LCH hue which better fits to Lab colorspace
 
-  const dt_aligned_pixel_t params = { hue, M_PI*M_PI/8, 0.0f, 0.0f };
+  const dt_aligned_pixel_t params = { hue, M_PI_F*M_PI_F/8, 0.0f, 0.0f };
 
   dt_iop_colorreconstruct_bilateral_t *b;
   dt_iop_colorreconstruct_bilateral_frozen_t *can = NULL;
@@ -626,7 +623,7 @@ void process(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *c
   if(sigma_s > DT_COLORRECONSTRUCT_SPATIAL_APPROX
      && self->dev->gui_attached
      && g
-     && (piece->pipe->type & DT_DEV_PIXELPIPE_FULL))
+     && dt_pipe_is_full(piece->pipe))
   {
     // if we are zoomed in more than just a little bit, we try to use the canned grid of the preview pipeline
     if(dt_dev_get_zoomed_in() > 1.05f)
@@ -656,7 +653,7 @@ void process(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *c
   dt_iop_colorreconstruct_bilateral_slice(b, in, out, data->threshold, roi_in, piece->iscale);
 
   // here is where we generate the canned bilateral grid of the preview pipe for later use
-  if(self->dev->gui_attached && g && (piece->pipe->type & DT_DEV_PIXELPIPE_PREVIEW))
+  if(self->dev->gui_attached && g && dt_pipe_is_preview(piece->pipe))
   {
     dt_hash_t hash = dt_dev_hash_plus(self->dev, piece->pipe, self->iop_order, DT_DEV_TRANSFORM_DIR_BACK_INCL);
     dt_iop_gui_enter_critical_section(self);
@@ -715,7 +712,7 @@ static dt_iop_colorreconstruct_bilateral_cl_t *dt_iop_colorreconstruct_bilateral
                                   .cellsize = 4 * sizeof(float) + sizeof(int), .overhead = 0,
                                   .sizex = 1 << 6, .sizey = 1 << 6 };
 
-  if(dt_opencl_local_buffer_opt(devid, global->kernel_colorreconstruct_splat, &locopt))
+  if(dt_opencl_local_buffer_opt(devid, global->kernel_colorreconstruct_splat, &locopt) == CL_SUCCESS)
   {
     blocksizex = locopt.sizex;
     blocksizey = locopt.sizey;
@@ -823,7 +820,7 @@ static dt_iop_colorreconstruct_bilateral_frozen_t *dt_iop_colorreconstruct_bilat
   {
     // read bilateral grid from device memory to host buffer (blocking)
     cl_int err = dt_opencl_read_buffer_from_device(b->devid, bf->buf, b->dev_grid, 0,
-                                    sizeof(dt_iop_colorreconstruct_Lab_t) * b->size_x * b->size_y * b->size_z, CL_TRUE);
+                                    sizeof(dt_iop_colorreconstruct_Lab_t) * b->size_x * b->size_y * b->size_z, TRUE);
     if(err != CL_SUCCESS)
     {
       dt_print(DT_DEBUG_OPENCL,
@@ -855,7 +852,7 @@ static dt_iop_colorreconstruct_bilateral_cl_t *dt_iop_colorreconstruct_bilateral
                                   .cellsize = 4 * sizeof(float) + sizeof(int), .overhead = 0,
                                   .sizex = 1 << 6, .sizey = 1 << 6 };
 
-  if(dt_opencl_local_buffer_opt(devid, global->kernel_colorreconstruct_splat, &locopt))
+  if(dt_opencl_local_buffer_opt(devid, global->kernel_colorreconstruct_splat, &locopt) == CL_SUCCESS)
   {
     blocksizex = locopt.sizex;
     blocksizey = locopt.sizey;
@@ -919,7 +916,7 @@ static dt_iop_colorreconstruct_bilateral_cl_t *dt_iop_colorreconstruct_bilateral
   {
     // write bilateral grid from host buffer to device memory (blocking)
     cl_int err = dt_opencl_write_buffer_to_device(b->devid, bf->buf, b->dev_grid, 0,
-                                    bf->size_x * bf->size_y * bf->size_z * sizeof(dt_iop_colorreconstruct_Lab_t), CL_TRUE);
+                                    bf->size_x * bf->size_y * bf->size_z * sizeof(dt_iop_colorreconstruct_Lab_t), TRUE);
     if(err != CL_SUCCESS)
     {
       dt_print(DT_DEBUG_OPENCL,
@@ -935,68 +932,63 @@ static dt_iop_colorreconstruct_bilateral_cl_t *dt_iop_colorreconstruct_bilateral
 static cl_int dt_iop_colorreconstruct_bilateral_splat_cl(dt_iop_colorreconstruct_bilateral_cl_t *b, cl_mem in, const float threshold,
                                                          dt_iop_colorreconstruct_precedence_t precedence, const float *params)
 {
-  cl_int err = -666;
+  cl_int err = DT_OPENCL_PROCESS_CL;
   if(!b) return err;
-  int pref = precedence;
-  size_t sizes[] = { ROUNDUP(b->width, b->blocksizex), ROUNDUP(b->height, b->blocksizey), 1 };
-  size_t local[] = { b->blocksizex, b->blocksizey, 1 };
-  dt_opencl_set_kernel_args(b->devid, b->global->kernel_colorreconstruct_splat, 0, CLARG(in), CLARG(b->dev_grid),
+  const int pref = precedence;
+  const size_t sizes[2] = { ROUNDUP(b->width, b->blocksizex), ROUNDUP(b->height, b->blocksizey) };
+  const size_t local[2] = { b->blocksizex, b->blocksizey };
+  err = dt_opencl_enqueue_kernel_2d_local_args(b->devid, b->global->kernel_colorreconstruct_splat, sizes, local,
+    CLARG(in), CLARG(b->dev_grid),
     CLARG(b->width), CLARG(b->height), CLARG(b->size_x), CLARG(b->size_y), CLARG(b->size_z), CLARG(b->sigma_s),
     CLARG(b->sigma_r), CLARG(threshold), CLARG(pref), CLARRAY(4, params), CLLOCAL(b->blocksizex * b->blocksizey * sizeof(int)),
     CLLOCAL(b->blocksizex * b->blocksizey * 4 * sizeof(float)));
-  err = dt_opencl_enqueue_kernel_2d_with_local(b->devid, b->global->kernel_colorreconstruct_splat, sizes, local);
   return err;
 }
 
 static cl_int dt_iop_colorreconstruct_bilateral_blur_cl(dt_iop_colorreconstruct_bilateral_cl_t *b)
 {
-  cl_int err = -666;
+  cl_int err = DT_OPENCL_PROCESS_CL;
   if(!b) return err;
-  size_t sizes[3] = { 0, 0, 1 };
 
   err = dt_opencl_enqueue_copy_buffer_to_buffer(b->devid, b->dev_grid, b->dev_grid_tmp, 0, 0,
                                                 sizeof(float) * b->size_x * b->size_y * b->size_z * 4);
   if(err != CL_SUCCESS) return err;
 
-  sizes[0] = ROUNDUPDWD(b->size_z, b->devid);
-  sizes[1] = ROUNDUPDHT(b->size_y, b->devid);
   int stride1, stride2, stride3;
   stride1 = b->size_x * b->size_y;
   stride2 = b->size_x;
   stride3 = 1;
-  dt_opencl_set_kernel_args(b->devid, b->global->kernel_colorreconstruct_blur_line, 0, CLARG(b->dev_grid_tmp),
+  err = dt_opencl_enqueue_kernel_2d_args(b->devid, b->global->kernel_colorreconstruct_blur_line, b->size_z, b->size_y,
+    CLARG(b->dev_grid_tmp),
     CLARG(b->dev_grid), CLARG(stride1), CLARG(stride2), CLARG(stride3), CLARG(b->size_z), CLARG(b->size_y),
     CLARG(b->size_x));
-  err = dt_opencl_enqueue_kernel_2d(b->devid, b->global->kernel_colorreconstruct_blur_line, sizes);
   if(err != CL_SUCCESS) return err;
 
   stride1 = b->size_x * b->size_y;
   stride2 = 1;
   stride3 = b->size_x;
-  sizes[0] = ROUNDUPDWD(b->size_z, b->devid);
-  sizes[1] = ROUNDUPDHT(b->size_x, b->devid);
-  dt_opencl_set_kernel_args(b->devid, b->global->kernel_colorreconstruct_blur_line, 0, CLARG(b->dev_grid),
+  err = dt_opencl_enqueue_kernel_2d_args(b->devid, b->global->kernel_colorreconstruct_blur_line, b->size_z, b->size_x,
+    CLARG(b->dev_grid),
     CLARG(b->dev_grid_tmp), CLARG(stride1), CLARG(stride2), CLARG(stride3), CLARG(b->size_z), CLARG(b->size_x),
     CLARG(b->size_y));
-  err = dt_opencl_enqueue_kernel_2d(b->devid, b->global->kernel_colorreconstruct_blur_line, sizes);
   if(err != CL_SUCCESS) return err;
 
   stride1 = 1;
   stride2 = b->size_x;
   stride3 = b->size_x * b->size_y;
-  sizes[0] = ROUNDUPDWD(b->size_x, b->devid);
-  sizes[1] = ROUNDUPDHT(b->size_y, b->devid);
-  dt_opencl_set_kernel_args(b->devid, b->global->kernel_colorreconstruct_blur_line, 0, CLARG(b->dev_grid_tmp),
+
+  err = dt_opencl_enqueue_kernel_2d_args(b->devid, b->global->kernel_colorreconstruct_blur_line, b->size_x, b->size_y,
+    CLARG(b->dev_grid_tmp),
     CLARG(b->dev_grid), CLARG(stride1), CLARG(stride2), CLARG(stride3), CLARG(b->size_x), CLARG(b->size_y),
     CLARG(b->size_z));
-  err = dt_opencl_enqueue_kernel_2d(b->devid, b->global->kernel_colorreconstruct_blur_line, sizes);
+
   return err;
 }
 
 static cl_int dt_iop_colorreconstruct_bilateral_slice_cl(dt_iop_colorreconstruct_bilateral_cl_t *b, cl_mem in, cl_mem out,
                                                          const float threshold, const dt_iop_roi_t *roi, const float iscale)
 {
-  cl_int err = -666;
+  cl_int err = DT_OPENCL_PROCESS_CL;
   if(!b) return err;
   const int bxy[2] = { b->x, b->y };
   const int roixy[2] = { roi->x, roi->y };
@@ -1021,9 +1013,9 @@ int process_cl(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_mem dev_
   const float sigma_s = fmax(d->spatial, 1.0f) / scale;
   const float hue = hue_conversion(d->hue); // convert to LCH hue which better fits to Lab colorspace
 
-  const float params[4] = { hue, M_PI*M_PI/8, 0.0f, 0.0f };
+  const float params[4] = { hue, M_PI_F*M_PI_F/8.0f, 0.0f, 0.0f };
 
-  cl_int err = -666;
+  cl_int err = DT_OPENCL_PROCESS_CL;
 
   dt_iop_colorreconstruct_bilateral_cl_t *b;
   dt_iop_colorreconstruct_bilateral_frozen_t *can = NULL;
@@ -1032,7 +1024,7 @@ int process_cl(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_mem dev_
   if(sigma_s > DT_COLORRECONSTRUCT_SPATIAL_APPROX
      && self->dev->gui_attached
      && g
-     && (piece->pipe->type & DT_DEV_PIXELPIPE_FULL))
+     && dt_pipe_is_full(piece->pipe))
   {
     // if we are zoomed in more than just a little bit, we try to use the canned grid of the preview pipeline
     if(dt_dev_get_zoomed_in() > 1.05f)
@@ -1064,7 +1056,7 @@ int process_cl(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_mem dev_
   err = dt_iop_colorreconstruct_bilateral_slice_cl(b, dev_in, dev_out, d->threshold, roi_in, piece->iscale);
   if(err != CL_SUCCESS) goto error;
 
-  if(self->dev->gui_attached && g && (piece->pipe->type & DT_DEV_PIXELPIPE_PREVIEW))
+  if(self->dev->gui_attached && g && dt_pipe_is_preview(piece->pipe))
   {
     dt_hash_t hash = dt_dev_hash_plus(self->dev, piece->pipe, self->iop_order, DT_DEV_TRANSFORM_DIR_BACK_INCL);
     dt_iop_gui_enter_critical_section(self);
@@ -1134,9 +1126,7 @@ void tiling_callback(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
       = fmax(1.0f, (float)dt_iop_colorreconstruct_bilateral_singlebuffer_size(width, height, sigma_s, sigma_r) / basebuffer);
   tiling->overhead = 0;
   tiling->overlap = ceilf(4 * sigma_s);
-  tiling->xalign = 1;
-  tiling->yalign = 1;
-  return;
+  tiling->align = 1;
 }
 
 
@@ -1193,7 +1183,7 @@ void gui_update(dt_iop_module_t *self)
   dt_iop_gui_enter_critical_section(self);
   dt_iop_colorreconstruct_bilateral_dump(g->can);
   g->can = NULL;
-  g->hash = 0;
+  g->hash = DT_INVALID_HASH;
   dt_iop_gui_leave_critical_section(self);
 }
 
@@ -1225,9 +1215,9 @@ void gui_init(dt_iop_module_t *self)
   dt_iop_colorreconstruct_gui_data_t *g = IOP_GUI_ALLOC(colorreconstruct);
 
   g->can = NULL;
-  g->hash = 0;
+  g->hash = DT_INVALID_HASH;
 
-  GtkWidget *box_enabled = self->widget = gtk_box_new(GTK_ORIENTATION_VERTICAL, DT_BAUHAUS_SPACE);
+  GtkWidget *box_enabled = self->widget = dt_gui_vbox();
 
   g->threshold = dt_bauhaus_slider_from_params(self, N_("threshold"));
   g->spatial = dt_bauhaus_slider_from_params(self, N_("spatial"));
@@ -1267,8 +1257,6 @@ void gui_cleanup(dt_iop_module_t *self)
 {
   dt_iop_colorreconstruct_gui_data_t *g = self->gui_data;
   dt_iop_colorreconstruct_bilateral_dump(g->can);
-
-  IOP_GUI_FREE;
 }
 
 // clang-format off

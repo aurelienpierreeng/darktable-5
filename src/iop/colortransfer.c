@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2010-2024 darktable developers.
+    Copyright (C) 2010-2026 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -15,9 +15,6 @@
     You should have received a copy of the GNU General Public License
     along with darktable.  If not, see <http://www.gnu.org/licenses/>.
 */
-#ifdef HAVE_CONFIG_H
-#include "config.h"
-#endif
 #include "common/colorspaces.h"
 #include "common/imagebuf.h"
 #include "common/points.h"
@@ -303,7 +300,7 @@ void process(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *c
 
   if(data->flag == ACQUIRE)
   {
-    if(piece->pipe->type & DT_DEV_PIXELPIPE_PREVIEW)
+    if(dt_pipe_is_preview(piece->pipe))
     {
       // only get stuff from the preview pipe, rest stays untouched.
       int hist[HISTN];
@@ -361,12 +358,6 @@ void process(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *c
       {
         const float L = in[j];
         const dt_aligned_pixel_t Lab = { L, in[j + 1], in[j + 2] };
-// a, b: subtract mean, scale nvar/var, add nmean
-#if 0 // single cluster, gives color banding
-        const int ki = get_cluster(in + j, data->n, mean);
-        out[j+1] = 100.0/out[j] * ((Lab[1] - mean[ki][0])*data->var[mapio[ki]][0]/var[ki][0] + data->mean[mapio[ki]][0]);
-        out[j+2] = 100.0/out[j] * ((Lab[2] - mean[ki][1])*data->var[mapio[ki]][1]/var[ki][1] + data->mean[mapio[ki]][1]);
-#else // fuzzy weighting
         get_clusters(in + j, data->n, mean, weight);
         out[j + 1] = out[j + 2] = 0.0f;
         for(int c = 0; c < data->n; c++)
@@ -376,7 +367,6 @@ void process(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, const void *c
           out[j + 2] += weight[c] * ((Lab[2] - mean[c][1]) * data->var[mapio[c]][1] / var[c][1]
                                      + data->mean[mapio[c]][1]);
         }
-#endif
         out[j + 3] = in[j + 3];
         j += ch;
       }

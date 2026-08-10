@@ -25,10 +25,6 @@
  * We start at version 2 so previous version of dt can add records in history with NULL params
  */
 
-#ifdef HAVE_CONFIG_H
-#include "config.h"
-#endif
-
 #include "common/imagebuf.h"
 #include "develop/develop.h"
 
@@ -104,9 +100,8 @@ int process_cl(struct dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_m
   const int width = roi_in->width;
   const int height = roi_in->height;
 
-  size_t origin[] = { 0, 0, 0 };
-  size_t region[] = { width, height, 1 };
-  return dt_opencl_enqueue_copy_image(devid, dev_in, dev_out, origin, origin, region);
+  const size_t region[2] = { width, height };
+  return dt_opencl_enqueue_copy_image(devid, dev_in, dev_out, CLIMG_ORIGIN, CLIMG_ORIGIN, region);
 }
 #endif
 
