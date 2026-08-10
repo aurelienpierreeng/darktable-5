@@ -100,7 +100,7 @@ jobs:
             libgdk-pixbuf-2.0-dev libglib2.0-dev libgmic-dev libgphoto2-dev \
             libgraphicsmagick1-dev libgtk-3-dev libheif-dev libjpeg-dev \
             libjson-glib-dev liblcms2-dev liblensfun-dev liblua5.4-dev \
-            libonnxruntime-dev libopenexr-dev libopenjp2-7-dev libosmgpsmap-1.0-dev \
+            libopenexr-dev libopenjp2-7-dev libosmgpsmap-1.0-dev \
             libpango1.0-dev libpng-dev libportmidi-dev libpotrace-dev libpugixml-dev \
             libraw-dev librsvg2-dev libsdl2-dev libsecret-1-dev libsqlite3-dev \
             libtiff5-dev libwebp-dev libx11-dev libxml2-dev libxml2-utils \
@@ -122,9 +122,18 @@ jobs:
           # way, which is also what makes their clang-tidy numbers comparable.
           # clang-tidy then reads a GCC compilation database; the --extra-arg flags
           # below stop it treating GCC-only warning flags as findings.
+          # USE_AI=OFF: 5.6's src/ai/ ONNX backend needs libonnxruntime-dev, which
+          # Ubuntu does not package (it exists only in Debian trixie/sid), and
+          # src/CMakeLists.txt makes a missing ONNX Runtime a FATAL_ERROR. The cost is
+          # narrow and stated rather than hidden: src/ai/ - three files - is the only
+          # part of the tree clang-tidy does not see. Every other section of the panel
+          # still covers it, because complexity, symbols and layering are measured
+          # without a build tree. Ansel has no counterpart module, so nothing that
+          # could be compared is lost.
           cmake -B build -S . -G Ninja \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
-            -DCMAKE_BUILD_TYPE=Release
+            -DCMAKE_BUILD_TYPE=Release \
+            -DUSE_AI=OFF
 
       # Some translation units are generated at build time (config headers, the
       # preferences GUI, ...). Build only those, so clang-tidy does not trip over
