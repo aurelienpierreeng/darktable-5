@@ -1,0 +1,147 @@
+#   clang-tidy pass for the code-health panel.
+#
+#   Kept separate from the docs workflow because clang-tidy needs a configured build
+#   tree (compile_commands.json), and therefore the project's whole dependency set,
+#   which has no business being installed just to run Doxygen. This job produces the
+#   report; the docs job downloads the most recent successful one and folds it into
+#   the published panel.
+#
+#   The check list is specified INLINE here rather than read from the repository's
+#   .clang-tidy. That is deliberate: .clang-tidy is a working tool configuration and
+#   differs between darktable and Ansel (Ansel's is scoped to unused-include
+#   detection). The comparison is only meaningful if both codebases are measured with
+#   exactly the same checks, so the ruleset lives in the workflow, identical on both
+#   sides, and the local .clang-tidy is bypassed with --config.
+#
+#   Copyright (C) 2025 Aurélien PIERRE.
+#
+#   This program is free software: you can redistribute it and/or modify
+#   it under the terms of the GNU General Public License as published by
+#   the Free Software Foundation, either version 3 of the License, or
+#   (at your option) any later version.
+#
+#   This program is distributed in the hope that it will be useful,
+#   but WITHOUT ANY WARRANTY; without even the implied warranty of
+#   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#   GNU General Public License for more details.
+#
+#   You should have received a copy of the GNU General Public License
+#   along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+
+name: Code health
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+    paths:
+      - '.github/workflows/code-health.yml'
+      - 'tools/code_health.py'
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  clang-tidy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      # Identical on both repositories. General maintainability and correctness
+      # signal, restricted to checks that are meaningful for C:
+      #   misc-include-cleaner            unusable on a glib/GTK tree (fires on nearly
+      #                                   every symbol - see Ansel's .clang-tidy notes)
+      #   bugprone-easily-swappable-parameters
+      #                                   fires on essentially every C function taking
+      #                                   two ints; no signal at this scale
+      #   bugprone-narrowing-conversions,
+      #   cert-err33-c                    tens of thousands of hits in pixel code and
+      #                                   around printf; they would drown everything else
+      CLANG_TIDY_CHECKS: >-
+        -*,bugprone-*,performance-*,misc-*,cert-*,
+        readability-non-const-parameter,readability-misleading-indentation,
+        -misc-include-cleaner,-bugprone-easily-swappable-parameters,
+        -bugprone-narrowing-conversions,-cert-err33-c
+    steps:
+      - name: Install dependencies
+        run: |
+          sudo apt-get --yes update
+          sudo apt-get --yes install \
+            build-essential cmake ninja-build clang-tidy \
+            appstream-util desktop-file-utils gettext git intltool \
+            libatk1.0-dev libavif-dev libcairo2-dev libcolord-dev libcolord-gtk-dev \
+            libcups2-dev libcurl4-gnutls-dev libexiv2-dev libgdk-pixbuf2.0-dev \
+            libglib2.0-dev libgmic-dev libgphoto2-dev libgraphicsmagick1-dev \
+            libgtk-3-dev libheif-dev libjpeg-dev libjson-glib-dev liblcms2-dev \
+            liblensfun-dev liblua5.4-dev libopenexr-dev libopenjp2-7-dev \
+            libosmgpsmap-1.0-dev libpango1.0-dev libpng-dev libportmidi-dev \
+            libpugixml-dev libraw-dev librsvg2-dev libsdl2-dev libsecret-1-dev \
+            libsqlite3-dev libtiff5-dev libwebp-dev libx11-dev libxml2-dev \
+            libxml2-utils perl po4a python3-jsonschema xsltproc zlib1g-dev
+
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      # Configure only - nothing is compiled. All we need is compile_commands.json.
+      - name: Configure build tree
+        run: |
+          cmake -B build -S . -G Ninja \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            -DCMAKE_BUILD_TYPE=Release
+
+      # Some translation units are generated at build time (config headers, the
+      # preferences GUI, ...). Build only those, so clang-tidy does not trip over
+      # missing generated headers.
+      - name: Generate build-time headers
+        continue-on-error: true
+        run: |
+          cmake --build build --target generate_all 2>/dev/null \
+            || ninja -C build -t targets all 2>/dev/null | grep -oE '^[^:]+\.h' | head -50 \
+            | xargs -r -n1 ninja -C build || true
+
+      - name: Run clang-tidy
+        run: |
+          # Third-party translation units are excluded: their findings are not this
+          # repository's to fix, exactly as in .sonarcloud.properties.
+          python3 - <<'PY' > files.txt
+          import json
+          skip = ("/external/", "/tests/integration/")
+          seen = set()
+          for e in json.load(open("build/compile_commands.json")):
+              f = e["file"]
+              if any(s in f for s in skip) or f in seen:
+                  continue
+              seen.add(f)
+              print(f)
+          PY
+          echo "translation units to analyse: $(wc -l < files.txt)"
+          checks=$(echo "$CLANG_TIDY_CHECKS" | tr -d ' \n')
+          xargs -a files.txt -P "$(nproc)" -I{} \
+            clang-tidy -p build --quiet --config="{Checks: '$checks'}" {} \
+            > clang-tidy.log 2>/dev/null || true
+          echo "findings: $(grep -cE 'warning:|error:' clang-tidy.log || true)"
+
+      - name: Summarise
+        run: |
+          {
+            echo "### clang-tidy"
+            echo '```'
+            echo "translation units : $(wc -l < files.txt)"
+            echo "findings          : $(grep -cE 'warning:|error:' clang-tidy.log || true)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload report
+        uses: actions/upload-artifact@v4
+        with:
+          name: clang-tidy-report
+          path: clang-tidy.log
+          retention-days: 90
