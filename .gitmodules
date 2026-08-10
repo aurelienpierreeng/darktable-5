@@ -20,3 +20,6 @@
 [submodule "src/external/lua-scripts"]
 	path = src/external/lua-scripts
 	url = https://github.com/darktable-org/lua-scripts.git
+[submodule "doc/doxygen-awesome-css"]
+	path = doc/doxygen-awesome-css
+	url = https://github.com/jothepro/doxygen-awesome-css.git
