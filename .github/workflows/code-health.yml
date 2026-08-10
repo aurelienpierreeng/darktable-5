@@ -85,20 +85,26 @@ jobs:
           sudo apt-get --yes install \
             "clang-${LLVM_VERSION}" "clang-tidy-${LLVM_VERSION}" "libomp-${LLVM_VERSION}-dev"
 
+      # Kept in step with .github/workflows/ci.yml, which is upstream's own list and
+      # the source of truth. A version bump can add a hard dependency - 5.6 added
+      # libpotrace-dev, libonnxruntime-dev and libarchive-dev over 5.0 - so re-sync
+      # this when the tree is upgraded. The failure mode is loud: cmake stops with
+      # "Could NOT find <package>", it never silently analyses less code.
       - name: Install dependencies
         run: |
           sudo apt-get --yes install \
             build-essential cmake ninja-build \
             appstream-util desktop-file-utils gettext git intltool \
-            libatk1.0-dev libavif-dev libcairo2-dev libcolord-dev libcolord-gtk-dev \
-            libcups2-dev libcurl4-gnutls-dev libexiv2-dev libgdk-pixbuf2.0-dev \
-            libglib2.0-dev libgmic-dev libgphoto2-dev libgraphicsmagick1-dev \
-            libgtk-3-dev libheif-dev libjpeg-dev libjson-glib-dev liblcms2-dev \
-            liblensfun-dev liblua5.4-dev libopenexr-dev libopenjp2-7-dev \
-            libosmgpsmap-1.0-dev libpango1.0-dev libpng-dev libportmidi-dev \
-            libpugixml-dev libraw-dev librsvg2-dev libsdl2-dev libsecret-1-dev \
-            libsqlite3-dev libtiff5-dev libwebp-dev libx11-dev libxml2-dev \
-            libxml2-utils perl po4a python3-jsonschema xsltproc zlib1g-dev
+            libarchive-dev libatk1.0-dev libavif-dev libcairo2-dev libcolord-dev \
+            libcolord-gtk-dev libcups2-dev libcurl4-gnutls-dev libexiv2-dev \
+            libgdk-pixbuf-2.0-dev libglib2.0-dev libgmic-dev libgphoto2-dev \
+            libgraphicsmagick1-dev libgtk-3-dev libheif-dev libjpeg-dev \
+            libjson-glib-dev liblcms2-dev liblensfun-dev liblua5.4-dev \
+            libonnxruntime-dev libopenexr-dev libopenjp2-7-dev libosmgpsmap-1.0-dev \
+            libpango1.0-dev libpng-dev libportmidi-dev libpotrace-dev libpugixml-dev \
+            libraw-dev librsvg2-dev libsdl2-dev libsecret-1-dev libsqlite3-dev \
+            libtiff5-dev libwebp-dev libx11-dev libxml2-dev libxml2-utils \
+            perl po4a python3-jsonschema xsltproc zlib1g-dev
 
       - name: Checkout
         uses: actions/checkout@v6
