@@ -36,14 +36,25 @@ import subprocess
 import sys
 from collections import Counter, defaultdict
 
-# Directories that are vendored third-party code, excluded everywhere so the numbers
-# describe the code this repository actually authors. Kept in step with the
-# sonar.exclusions line in .sonarcloud.properties.
+# Vendored third-party code and dead trees, excluded everywhere so the numbers describe
+# the code each repository actually authors. Kept in step with the sonar.exclusions line
+# in .sonarcloud.properties.
+#
+# This is the UNION of what darktable and Ansel each need, so that this file stays
+# byte-identical in both repositories and "are the two panels measuring the same thing?"
+# is answerable with cmp(1). A path that exists in only one tree costs nothing in the
+# other.
 EXCLUDED_DIR_PARTS = (
-    "/external/",
-    "/tests/integration/",
-    "/doxygen-awesome-css/",
+    "/external/",              # both: vendored rawspeed, LibRaw, lua, sentry-native, ...
+    "/tests/integration/",     # darktable: darktable-tests submodule
+    "/image_test/samples/",    # Ansel: test-image bank submodule
+    "/apps/ansel-chart/",      # Ansel: dead code, no build target compiles it
+    "/doxygen-awesome-css/",   # both: Doxygen theme submodule
 )
+
+# Shell-glob form of the same list, for tools that filter by pattern rather than
+# by substring. Derived, never written out twice.
+EXCLUDED_GLOBS = tuple("*%s*" % part for part in EXCLUDED_DIR_PARTS)
 
 SOURCE_SUFFIXES = (".c", ".cc", ".cpp", ".h", ".hpp", ".m", ".mm")
 
@@ -112,11 +123,12 @@ def collect_symbols(db_path):
     return out
 
 
-def collect_includers(db_path):
-    """How many files include each header, directly.
+def include_edges(db_path):
+    """Every (including file, included file) pair inside this tree.
 
-    This is the number behind the "included by" graphs: the fan-in of a header, and
-    the single clearest measure of how entangled a codebase's headers are.
+    Doxygen's `includes` table is the same data its "included by" graphs are drawn
+    from, so the numbers derived here and the graphs on the file pages cannot drift
+    apart.
     """
     if not db_path or not os.path.exists(db_path):
         return None
@@ -147,13 +159,221 @@ def collect_includers(db_path):
     finally:
         con.close()
 
+    return [(a, b) for a, b in rows if not is_excluded(a) and not is_excluded(b)]
+
+
+def collect_includers(edges):
+    """How many files include each header, directly.
+
+    This is the number behind the "included by" graphs: the fan-in of a header, and
+    the single clearest measure of how entangled a codebase's headers are.
+    """
+    if not edges:
+        return None
     fan_in = Counter()
-    for including, included in rows:
-        if is_excluded(including) or is_excluded(included):
-            continue
+    for _including, included in edges:
         fan_in[included] += 1
-    out = [{"file": f, "included_by": n} for f, n in fan_in.most_common()]
-    return out
+    return [{"file": f, "included_by": n} for f, n in fan_in.most_common()]
+
+
+# ----------------------------------------------------------------------- layering
+
+
+# Declared layer order, low to high. A module may depend on its own layer or on any
+# layer BELOW it; an include pointing the other way is a layer inversion.
+#
+# This is a policy, not a measurement, so it is written down rather than inferred, and
+# it is the UNION of both trees' module names so the file stays byte-identical in the
+# darktable and Ansel repositories. A directory that exists in only one of them costs
+# nothing in the other, and the two projects are therefore judged against exactly the
+# same architectural expectation - which is the only way the inversion counts can be
+# compared at all.
+#
+# The order encodes the ordinary layering of a photo editor: freestanding primitives
+# know nothing of the application, the pixel pipeline knows nothing of the GUI, and
+# entry points sit on top of everything.
+LAYERS = {
+    # 0 - freestanding primitives: allocation, maths, SIMD pixel helpers
+    "system": 0, "math": 0, "pixel": 0,
+    # 1 - shared services on top of those primitives
+    "common": 1, "colorprofiles": 1,
+    # 2 - reading and writing images
+    "imageio": 2,
+    # 3 - the pixel pipeline and image development
+    "develop": 3,
+    # 4 - pipeline modules, which the pipeline dispatches to
+    "iop": 4,
+    # 5 - job system and application control
+    "control": 5,
+    # 6 - GUI toolkit: custom widgets, no application knowledge
+    "dtgtk": 6, "bauhaus": 6, "widgets": 6,
+    # 7 - the GUI shell
+    "gui": 7,
+    # 8 - GUI modules and views built on the shell
+    "libs": 8, "views": 8,
+    # 9 - bindings and side tools built on everything above
+    "lua": 9, "chart": 9,
+    # 10 - platform glue and entry points
+    "apps": 10, "cli": 10, "cltest": 10, "cmstest": 10, "generate-cache": 10,
+    "osx": 10, "win": 10, "ppc64le": 10, "tests": 10,
+    # 11 - the application-global header itself, where one sits at the source root
+    "(root)": 11,
+}
+
+UNRANKED_LAYER = None    # modules with no declared rank take part in cycles, not in
+                         # the inversion count: ranking them would be inventing policy
+
+
+def module_of(path, source_dir="src"):
+    """The module a file belongs to: its first path component under the source dir."""
+    p = path.replace(os.sep, "/")
+    marker = "/" + source_dir.strip("/") + "/"
+    if p.startswith(source_dir.strip("/") + "/"):
+        rest = p[len(source_dir.strip("/")) + 1:]
+    elif marker in p:
+        rest = p.split(marker, 1)[1]
+    else:
+        return None
+    parts = rest.split("/")
+    return parts[0] if len(parts) > 1 else "(root)"
+
+
+def strongly_connected(nodes, succ):
+    """Tarjan's SCC, iterative so a deep include chain cannot blow the stack."""
+    index, low, on_stack, stack, comps = {}, {}, set(), [], []
+    counter = [0]
+    for root in nodes:
+        if root in index:
+            continue
+        work = [(root, iter(succ.get(root, ())))]
+        index[root] = low[root] = counter[0]
+        counter[0] += 1
+        stack.append(root)
+        on_stack.add(root)
+        while work:
+            node, it = work[-1]
+            advanced = False
+            for nxt in it:
+                if nxt not in index:
+                    index[nxt] = low[nxt] = counter[0]
+                    counter[0] += 1
+                    stack.append(nxt)
+                    on_stack.add(nxt)
+                    work.append((nxt, iter(succ.get(nxt, ()))))
+                    advanced = True
+                    break
+                if nxt in on_stack:
+                    low[node] = min(low[node], index[nxt])
+            if advanced:
+                continue
+            work.pop()
+            if work:
+                low[work[-1][0]] = min(low[work[-1][0]], low[node])
+            if low[node] == index[node]:
+                comp = []
+                while True:
+                    w = stack.pop()
+                    on_stack.discard(w)
+                    comp.append(w)
+                    if w == node:
+                        break
+                comps.append(comp)
+    return comps
+
+
+def collect_layering(edges, source_dir="src"):
+    """Layer inversions and dependency cycles, at module and at file level.
+
+    Two different questions, deliberately reported side by side:
+
+    - Cycles are OBJECTIVE. If module A depends on B and B depends on A, no layering
+      of the two can exist, whatever anyone declares. Counted as strongly connected
+      components of the dependency graph.
+    - Inversions are POLICY. They count include edges that point from a lower declared
+      layer to a higher one, against the LAYERS table above.
+    """
+    if not edges:
+        return None
+
+    mod_edges = Counter()
+    file_succ = defaultdict(set)
+    files = set()
+    for a, b in edges:
+        files.add(a)
+        files.add(b)
+        file_succ[a].add(b)
+        ma, mb = module_of(a, source_dir), module_of(b, source_dir)
+        if ma and mb and ma != mb:
+            mod_edges[(ma, mb)] += 1
+
+    # ---- inversions against the declared order
+    inversions, offenders, by_pair = 0, Counter(), Counter()
+    ranked_edges = 0
+    for (ma, mb), n in mod_edges.items():
+        la, lb = LAYERS.get(ma, UNRANKED_LAYER), LAYERS.get(mb, UNRANKED_LAYER)
+        if la is None or lb is None:
+            continue
+        ranked_edges += n
+        if la < lb:                       # a lower layer depends on a higher one
+            inversions += n
+            by_pair[("%s -> %s" % (ma, mb))] += n
+            offenders[ma] += n
+
+    # ---- cycles between modules
+    mod_succ = defaultdict(set)
+    for (ma, mb) in mod_edges:
+        mod_succ[ma].add(mb)
+    mod_cycles = [sorted(c) for c in strongly_connected(sorted(mod_succ), mod_succ)
+                  if len(c) > 1]
+    mod_cycles.sort(key=len, reverse=True)
+
+    # ---- cycles between individual files
+    file_cycles = [c for c in strongly_connected(sorted(files), file_succ) if len(c) > 1]
+    file_cycles.sort(key=len, reverse=True)
+
+    return {
+        "module_edges": len(mod_edges),
+        "module_include_count": sum(mod_edges.values()),
+        "ranked_include_count": ranked_edges,
+        "inversions": inversions,
+        "inversion_ratio": round(100.0 * inversions / max(1, ranked_edges), 1),
+        "inverted_pairs": by_pair.most_common(25),
+        "worst_offenders": offenders.most_common(15),
+        "module_cycles": mod_cycles[:15],
+        "module_cycle_count": len(mod_cycles),
+        "modules_in_cycles": sum(len(c) for c in mod_cycles),
+        "file_cycle_count": len(file_cycles),
+        "files_in_cycles": sum(len(c) for c in file_cycles),
+        "largest_file_cycle": sorted(file_cycles[0]) if file_cycles else [],
+    }
+
+
+def collect_god_header(edges):
+    """Who includes the application-global header.
+
+    darktable's src/common/darktable.h and Ansel's src/darktable.h are the same file
+    by descent. The number that matters is how many HEADERS include it: a .c doing so
+    is a choice local to that file, a .h doing so pushes the whole application into
+    every file downstream of it.
+    """
+    if not edges:
+        return None
+    target = None
+    for _a, b in edges:
+        if b.replace(os.sep, "/").endswith("/darktable.h") or b == "darktable.h":
+            target = b
+            break
+    if not target:
+        return None
+    headers = [a for a, b in edges if b == target and a.endswith((".h", ".hpp"))]
+    sources = [a for a, b in edges if b == target and not a.endswith((".h", ".hpp"))]
+    return {
+        "header": target,
+        "included_by_headers": len(headers),
+        "included_by_sources": len(sources),
+        "total": len(headers) + len(sources),
+        "headers": sorted(headers)[:40],
+    }
 
 
 # --------------------------------------------------------------------------- lizard
@@ -168,8 +388,8 @@ def collect_ccn(source_dir):
     if not shutil.which("lizard"):
         return None
     cmd = ["lizard", "--csv", "-l", "c", "-l", "cpp"]
-    for part in ("*/external/*", "*/tests/integration/*", "*/doxygen-awesome-css/*"):
-        cmd += ["-x", part]
+    for glob in EXCLUDED_GLOBS:
+        cmd += ["-x", glob]
     cmd.append(source_dir)
     ok, out = run(cmd)
     if not out.strip():
@@ -248,10 +468,12 @@ def collect_cppcheck(source_dir, jobs):
         "--suppress=unmatchedSuppression", "--suppress=checkersReport",
         "--template={severity}|{id}|{file}",
         "-j", str(jobs),
-        "-i", os.path.join(source_dir, "external"),
-        "-i", os.path.join(source_dir, "tests", "integration"),
         source_dir,
     ]
+    # cppcheck filters by path prefix; a directory that does not exist in this tree is
+    # simply ignored, which is what keeps this list shared between both repositories.
+    for rel in ("external", "tests/integration", "apps/ansel-chart"):
+        cmd[-1:-1] = ["-i", os.path.join(source_dir, *rel.split("/"))]
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, errors="replace")
     except (OSError, subprocess.SubprocessError) as exc:
@@ -477,6 +699,86 @@ def build_markdown(project, data):
         A("_lizard not available._")
     A("")
 
+    # ---- layering
+    lay = data.get("layering")
+    god = data.get("god_header")
+    A("Layering {#ch_layering}")
+    A("--------")
+    A("")
+    if lay:
+        A("Two different questions, reported side by side.")
+        A("")
+        A("**Cycles are objective.** If module A depends on B and B depends on A, no")
+        A("layering of the two exists, whatever anyone declares. Every cycle is a set of")
+        A("modules that can only be understood, built and reasoned about as one unit.")
+        A("")
+        A("**Inversions are policy.** They count include edges pointing from a lower")
+        A("declared layer to a higher one, against the layer order written down in")
+        A("`tools/code_health.py`. That table is identical in both repositories, so the")
+        A("two codebases are judged against the same expectation.")
+        A("")
+        A(md_table(
+            ["Measure", "Value"],
+            [["Cross-module include edges", "{:,}".format(lay["module_edges"])],
+             ["Cross-module includes", "{:,}".format(lay["module_include_count"])],
+             ["Layer inversions", "{:,}".format(lay["inversions"])],
+             ["Inversion ratio", "{} %".format(lay["inversion_ratio"])],
+             ["Module dependency cycles", "{:,}".format(lay["module_cycle_count"])],
+             ["Modules caught in a cycle", "{:,}".format(lay["modules_in_cycles"])],
+             ["File include cycles", "{:,}".format(lay["file_cycle_count"])],
+             ["Files caught in a cycle", "{:,}".format(lay["files_in_cycles"])]],
+            ["---", "--:"]))
+        A("")
+        if lay["inverted_pairs"]:
+            A("### Inverted dependencies {#ch_layering_inv}")
+            A("")
+            A(md_table(["Includes", "Lower layer depends on higher"],
+                       [["{:,}".format(n), "`%s`" % p] for p, n in lay["inverted_pairs"]],
+                       ["--:", "---"]))
+            A("")
+        if lay["module_cycles"]:
+            A("### Module dependency cycles {#ch_layering_cycles}")
+            A("")
+            A(md_table(["Modules", "Cycle"],
+                       [[len(c), ", ".join("`%s`" % m for m in c)]
+                        for c in lay["module_cycles"]],
+                       ["--:", "---"]))
+            A("")
+        if lay["largest_file_cycle"]:
+            A("### Largest file include cycle {#ch_layering_filecycle}")
+            A("")
+            A("%d files that mutually include one another, directly or transitively:"
+              % len(lay["largest_file_cycle"]))
+            A("")
+            for f in lay["largest_file_cycle"][:40]:
+                A("- `%s`" % f)
+            A("")
+    else:
+        A("_include data not available (needs Doxygen's SQLite output)._")
+        A("")
+    if god:
+        A("### The application-global header {#ch_layering_god}")
+        A("")
+        A("`%s` is the header every fork of this codebase inherits. A `.c` including it"
+          % god["header"])
+        A("is a choice local to that file; a **header** including it pushes the whole")
+        A("application into every file downstream, which is how an include graph stops")
+        A("being a graph and becomes a mesh.")
+        A("")
+        A(md_table(
+            ["Included by", "Count"],
+            [["Headers", "{:,}".format(god["included_by_headers"])],
+             ["Source files", "{:,}".format(god["included_by_sources"])],
+             ["Total", "{:,}".format(god["total"])]],
+            ["---", "--:"]))
+        A("")
+        if god["headers"]:
+            A("Headers that include it:")
+            A("")
+            for h in god["headers"]:
+                A("- `%s`" % h)
+            A("")
+
     # ---- coupling
     inc = data.get("includers")
     A("Header coupling {#ch_coupling}")
@@ -604,7 +906,10 @@ def main():
     data["cloc"] = step("cloc", lambda: collect_cloc(args.source_dir))
     data["ccn"] = step("lizard", lambda: collect_ccn(args.source_dir))
     data["symbols"] = step("symbols", lambda: collect_symbols(args.db))
-    data["includers"] = step("includes", lambda: collect_includers(args.db))
+    edges = step("includes", lambda: include_edges(args.db))
+    data["includers"] = step("fan-in", lambda: collect_includers(edges))
+    data["layering"] = step("layering", lambda: collect_layering(edges, args.source_dir))
+    data["god_header"] = step("global header", lambda: collect_god_header(edges))
     if not args.skip_cppcheck:
         data["cppcheck"] = step("cppcheck",
                                 lambda: collect_cppcheck(args.source_dir, args.jobs))
